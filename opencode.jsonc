@@ -1,4 +1,4 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@opencode-ai/elon-musk-algorithm"]
+  "plugin": ["./dist/index.js"]
 }

@@ -200,7 +200,7 @@ Then reference the local build in your opencode config:
 
 ```jsonc
 {
-  "plugin": ["./node_modules/@opencode-ai/elon-musk-algorithm/dist/index.js"]
+  "plugin": ["./dist/index.js"]
 }
 ```
 
