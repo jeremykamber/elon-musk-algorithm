@@ -123,7 +123,7 @@ Output:
   SIMPLIFIED       — restructuring applied
   OPTIMIZED        — performance improved
   BOTH             — simplification and optimization applied
-  ALREADY_CLEAN    — no changes needed, proceed to Step 4
+  ALREADY CLEAN    — no changes needed, proceed to Step 4
 ```
 
 **Simplification targets:**
@@ -312,7 +312,7 @@ This suggestion is a nudge, not an automatic run. The user must explicitly invok
 │  │  │ elon-delete  │  │ (runs all   │  │ (system prompt injection)     │ │  │
 │  │  │ elon-simplify│  │  5 steps)   │  │ chat.message                  │ │  │
 │  │  │ elon-accelerate││             │  │ (keyword trigger, whole-word) │ │  │
-│  │  │ elon-automate │  │             │  │ command.exec.before (/elon-algorithm)│ │
+│  │  │ elon-automate │  │             │  │ command.execute.before (/elon-algorithm)│ │
 │  │  └─────────────┘  └─────────────┘  │ experimental.text.complete      │ │  │
 │  │                                     │ (<step_done> detection & strip)│ │  │
 │  │                                     └──────────────────────────────┘ │  │
@@ -423,9 +423,10 @@ Plugin outputs:
 ### Example 3: Targeted Step Execution
 
 ```
-User: We're spending 20 minutes on CI. Can we speed it up?
+User: We're spending 20 minutes on CI. This pipeline is too slow
+      and the bottleneck is blocking every deploy.
 
-Plugin: 💡 Tip: You mentioned "speed up" — consider running
+Plugin: 💡 Tip: You mentioned "too slow" and "bottleneck" — consider running
         /elon-algorithm to apply the 5-step algorithm.
 
 User calls elon-accelerate tool directly with:

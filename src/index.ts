@@ -3,6 +3,7 @@ import type { TextPart } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin/tool";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
+import { randomUUID } from "node:crypto";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -42,7 +43,8 @@ function loadConfig(worktree: string): ElonConfig {
       keywords: parsed.keywords ?? DEFAULT_CONFIG.keywords,
       notifications: parsed.notifications ?? DEFAULT_CONFIG.notifications,
     };
-  } catch {
+  } catch (err) {
+    console.warn("[elon-algorithm] Failed to load elon.json, using defaults:", err);
     return DEFAULT_CONFIG;
   }
 }
@@ -510,15 +512,17 @@ The order is the algorithm. Break the order, break the result.`,
 
 function containsTriggerKeyword(text: string, keywords: string[]): string | null {
   for (const kw of keywords) {
-    const pattern = kw.includes(" ") ? kw : `\\b${kw}\\b`;
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = kw.includes(" ") ? `(?<!\\w)${escaped}(?!\\w)` : `\\b${escaped}\\b`;
     const re = new RegExp(pattern, "i");
     if (re.test(text)) return kw;
   }
   return null;
 }
 
-const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
+const elonMuskAlgorithmPlugin: Plugin = async ({ worktree, $ }) => {
   const config = loadConfig(worktree);
+  let lastNotified = 0;
 
   const hooks: Hooks = {
     // Register all 5 step tools + meta tool
@@ -552,9 +556,9 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
       const match = containsTriggerKeyword(userText, config.keywords);
       if (match) {
         const part: TextPart = {
-          id: crypto.randomUUID(),
+          id: randomUUID(),
           sessionID: input.sessionID,
-          messageID: input.messageID ?? crypto.randomUUID(),
+          messageID: input.messageID ?? randomUUID(),
           type: "text",
           text: `\n> 💡 **Tip:** You mentioned "*${match}*" — consider running \`/elon-algorithm\` to apply Elon Musk's 5-step engineering algorithm.`,
         };
@@ -562,12 +566,24 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
       }
     },
 
-    // <step_done> detection — strips tags and logs progress
+    // <step_done> detection — strips tags, optionally notifies
     "experimental.text.complete": async (input, output) => {
       const tagMatch = output.text.match(/<step_done\s+step=["']?(\d)["']?\s*\/?>/i);
       if (tagMatch) {
         const step = parseInt(tagMatch[1], 10);
         output.text = output.text.replace(tagMatch[0], "").trim();
+        if (config.notifications) {
+          const now = Date.now();
+          if (now - lastNotified > 30_000) {
+            lastNotified = now;
+            try {
+              const msg = step < 5
+                ? `Step ${step} complete. Proceeding to Step ${step + 1}.`
+                : "All 5 algorithm steps complete. Maximum velocity achieved.";
+              $`osascript -e 'display notification "${msg}" with title "Musk Algorithm"'`.catch(() => {});
+            } catch {}
+          }
+        }
       }
     },
 
@@ -576,7 +592,7 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
       if (input.command !== "elon-algorithm") return;
 
       const target = input.arguments?.trim() || "current codebase";
-      const id = crypto.randomUUID();
+      const id = randomUUID();
       const part: TextPart = {
         id,
         sessionID: input.sessionID,
