@@ -1,6 +1,103 @@
 import type { Plugin, Hooks } from "@opencode-ai/plugin";
 import type { TextPart } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin/tool";
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+interface ElonConfig {
+  mode: "full" | "gentle" | "steps-only";
+  keywords: string[];
+  notifications: boolean;
+}
+
+const DEFAULT_KEYWORDS = [
+  "optimize",
+  "automate",
+  "bottleneck",
+  "cycle time",
+  "bloat",
+  "waste",
+  "inefficient",
+  "technical debt",
+  "first principles",
+  "too slow",
+];
+
+const DEFAULT_CONFIG: ElonConfig = {
+  mode: "full",
+  keywords: DEFAULT_KEYWORDS,
+  notifications: false,
+};
+
+function loadConfig(worktree: string): ElonConfig {
+  try {
+    const configPath = join(worktree, "elon.json");
+    if (!existsSync(configPath)) return DEFAULT_CONFIG;
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return {
+      mode: parsed.mode ?? DEFAULT_CONFIG.mode,
+      keywords: parsed.keywords ?? DEFAULT_CONFIG.keywords,
+      notifications: parsed.notifications ?? DEFAULT_CONFIG.notifications,
+    };
+  } catch {
+    return DEFAULT_CONFIG;
+  }
+}
+
+// ─── System Prompt Templates ──────────────────────────────────────────────────
+
+const SYSTEM_PROMPT_FULL = `## ELON MUSK'S ALGORITHM — Operating Protocol
+
+You operate under The Algorithm. Follow these steps in strict order. Do NOT skip steps. Do NOT optimize before deleting. Do NOT automate before simplifying.
+
+### Step 1: QUESTION EVERY REQUIREMENT
+Identify the specific human who authored each requirement. Ignore their title or department. Assume the requirement is wrong. Your job is to make it "less dumb." No requirement is sacred.
+
+### Step 2: DELETE ANY PART OR PROCESS YOU CAN
+Remove components and steps relentlessly. If you are not forced to add back at least 10% of what you deleted, you have not deleted enough. Unused code, unnecessary features, redundant processes — all must go.
+
+### Step 3: SIMPLIFY AND OPTIMIZE
+Only now — streamline what remains. Optimizing before deletion is waste. If a component survived deletion, make it as simple as possible.
+
+### Step 4: ACCELERATE CYCLE TIME
+Find the bottleneck. Eliminate friction. Reduce iteration time. Move faster. Time is the only non-renewable resource.
+
+### Step 5: AUTOMATE
+Apply automation LAST. Automating something that should have been deleted or simplified scales the inefficiency. Only automate once Steps 1-4 are satisfied.
+
+### Core Directives
+- **First-Principles Thinking**: Strip every problem to its fundamental truths. Convention is not law.
+- **Walk to the Red**: Go directly to the source of the problem. Embed yourself at the point of failure.
+- **Bad News Loudly, Good News Quietly**: Surface problems immediately and with urgency.
+- **Vertical Integration**: Build critical components yourself. Don't outsource what determines your quality or velocity.
+- **The 10% Rule**: If you haven't had to re-add 10% of what you deleted, you were too conservative.
+- **Maniacal Urgency**: Every delay is an existential threat.
+- **20% Error Tolerance**: ~20% of your decisions will be wrong. Accept it. Speed beats perfection.
+
+### Step Completion
+After completing each step, emit \`<step_done step="N">\` at the end of your response, then wait for the user to say "proceed" before starting the next step.`;
+
+const SYSTEM_PROMPT_GENTLE = `## Musk Algorithm (Gentle Mode)
+
+Consider applying this ordered approach to your work:
+1. Question every requirement
+2. Delete any part or process you can
+3. Simplify and optimize what remains
+4. Accelerate cycle time
+5. Automate last
+
+Use these as guidelines, not enforcement.`;
+
+const SYSTEM_PROMPT_STEPS_ONLY = `## Musk Algorithm Steps
+
+1. Question every requirement
+2. Delete any part or process you can
+3. Simplify and optimize
+4. Accelerate cycle time
+5. Automate`;
 
 // ──────────────────────────────────────────────
 // Step 1 — Question Every Requirement
@@ -57,16 +154,12 @@ Returns a structured challenge of the requirement including:
       `  5. Would we make the same decision today, knowing what we know now?`
     );
     lines.push(``);
-    lines.push(`Verdict:`);
-    lines.push(
-      `  ⬜ VALIDATED — requirement survived challenge (proceed to Step 2)`
-    );
-    lines.push(
-      `  ⬜ FLAGGED — requirement needs further investigation`
-    );
-    lines.push(
-      `  ⬜ REJECTED — requirement should be removed`
-    );
+    lines.push(`Verdict (choose one and delete the others):`);
+    lines.push(`  ✅ VALIDATED — requirement survived challenge (proceed to Step 2)`);
+    lines.push(`  ⚠️  FLAGGED — needs further investigation`);
+    lines.push(`  ❌ REJECTED — requirement should be removed`);
+    lines.push(``);
+    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
 
     return {
       title: "Step 1: Question Every Requirement",
@@ -115,10 +208,12 @@ Only add it back if you actually need it.`,
     lines.push(`  If <10% of deletions get reverted, you were too conservative.`);
     lines.push(`  Be aggressive. You can always add back what's truly needed.`);
     lines.push(``);
-    lines.push(`Verdict:`);
-    lines.push(`  ⬜ DELETE — this can be removed`);
-    lines.push(`  ⬜ TRIM — can be reduced but not eliminated`);
-    lines.push(`  ⬜ KEEP — essential (proceed to Step 3)`);
+    lines.push(`Verdict (choose one and delete the others):`);
+    lines.push(`  🗑️  DELETE — this can be removed entirely`);
+    lines.push(`  ✂️  TRIM — can be reduced but not eliminated`);
+    lines.push(`  ✅ KEEP — essential (proceed to Step 3)`);
+    lines.push(``);
+    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
 
     return {
       title: "Step 2: Delete Any Part or Process You Can",
@@ -167,11 +262,13 @@ This step comes THIRD — not first. Only optimize what survived Step 2.`,
     lines.push(``);
     lines.push(`⚠️  Measure before and after — intuition about performance is often wrong.`);
     lines.push(``);
-    lines.push(`Verdict:`);
-    lines.push(`  ⬜ SIMPLIFIED — restructuring applied`);
-    lines.push(`  ⬜ OPTIMIZED — performance improved`);
-    lines.push(`  ⬜ BOTH — simplification and optimization applied`);
-    lines.push(`  ⬜ ALREADY CLEAN — no changes needed (proceed to Step 4)`);
+    lines.push(`Verdict (choose one and delete the others):`);
+    lines.push(`  🔧 SIMPLIFIED — restructuring applied`);
+    lines.push(`  ⚡ OPTIMIZED — performance improved`);
+    lines.push(`  ✅ BOTH — simplification and optimization applied`);
+    lines.push(`  ⏭️  ALREADY CLEAN — no changes needed (proceed to Step 4)`);
+    lines.push(``);
+    lines.push(`**You must commit to exactly one verdict above. Delete the three that don't apply.**`);
 
     return {
       title: "Step 3: Simplify and Optimize",
@@ -217,12 +314,12 @@ Speed up the feedback loops of what remains. Fast cycles beat optimization.`,
     lines.push(`  5. Can we SHORTEN FEEDBACK LOOPS?`);
     lines.push(`     → Faster testing, preview environments, earlier validation`);
     lines.push(``);
-    lines.push(`Common Acceleration Targets (code):`);
-    lines.push(`  • Reduce build times (incremental compilation, caching)`);
-    lines.push(`  • Speed up test execution (parallel runners, unit before integration)`);
-    lines.push(`  • Shorten deployment pipelines (remove unnecessary stages)`);
-    lines.push(`  • Reduce dev loop times (hot reload, watch mode)`);
-    lines.push(`  • Smaller PRs with clearer descriptions → faster review`);
+    lines.push(`Verdict (choose one and delete the others):`);
+    lines.push(`  ⏱️  CYCLE_REDUCED — measurable improvement achieved`);
+    lines.push(`  🎯 BOTTLENECK_IDENTIFIED — bottleneck found but not yet resolved`);
+    lines.push(`  ✅ ALREADY_OPTIMAL — no acceleration needed (proceed to Step 5)`);
+    lines.push(``);
+    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
 
     return {
       title: "Step 4: Accelerate Cycle Time",
@@ -265,17 +362,15 @@ now you have fast, expensive, automated waste. This step MUST be last.`,
     lines.push(`  3. Can we automate just DETECTION, not the response?`);
     lines.push(`     → Alerting before full remediation automation`);
     lines.push(``);
-    lines.push(`Common Automation Targets (code):`);
-    lines.push(`  • Linting, formatting, type checking (after code is clean)`);
-    lines.push(`  • Testing (after tests are fast — accelerated in Step 4)`);
-    lines.push(`  • Deployment (after pipeline is stable)`);
-    lines.push(`  • Code generation (after patterns are stable)`);
-    lines.push(`  • Monitoring and alerting`);
-    lines.push(`  • CI/CD regression checks`);
-    lines.push(`  • Infrastructure as Code`);
-    lines.push(``);
     lines.push(`⚠️  Watch out: Don't automate complexity.`);
     lines.push(`  If a process is too complex to automate, revisit Steps 1-3.`);
+    lines.push(``);
+    lines.push(`Verdict (choose one and delete the others):`);
+    lines.push(`  🤖 AUTOMATED — fully automated`);
+    lines.push(`  🔶 PARTIAL — partially automated, manual steps remain`);
+    lines.push(`  ⏸️  NOT_READY — process needs more simplification first (revisit Step 3)`);
+    lines.push(``);
+    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
 
     return {
       title: "Step 5: Automate",
@@ -335,7 +430,7 @@ The order is the algorithm. Break the order, break the result.`,
       results.push(`  • What happens if we remove it completely?`);
       results.push(`  • Is the original constraint still valid?`);
       results.push(`  • Would we make the same decision today?`);
-      results.push(`→ VERDICT: Survives challenge. Proceed to Step 2.`);
+      results.push(`→ VERDICT: Choose one — VALIDATED | FLAGGED | REJECTED`);
       results.push(``);
     }
 
@@ -349,7 +444,7 @@ The order is the algorithm. Break the order, break the result.`,
       results.push(`  • What is the minimum version that works?`);
       results.push(`  • What breaks if completely gone?`);
       results.push(`  • Would a competitor ship without this?`);
-      results.push(`→ VERDICT: Essential. Keep and proceed to Step 3.`);
+      results.push(`→ VERDICT: Choose one — DELETE | TRIM | KEEP`);
       results.push(``);
     }
 
@@ -363,7 +458,7 @@ The order is the algorithm. Break the order, break the result.`,
       results.push(`  • Can this be faster given current design?`);
       results.push(`  • Can data structures be more efficient?`);
       results.push(`  • Can interfaces be cleaner?`);
-      results.push(`→ VERDICT: Simplify and optimize applied. Proceed to Step 4.`);
+      results.push(`→ VERDICT: Choose one — SIMPLIFIED | OPTIMIZED | BOTH | ALREADY CLEAN`);
       results.push(``);
     }
 
@@ -377,7 +472,7 @@ The order is the algorithm. Break the order, break the result.`,
       results.push(`  • What is the bottleneck?`);
       results.push(`  • Can we parallelize or reduce handoffs?`);
       results.push(`  • Can we shorten feedback loops?`);
-      results.push(`→ VERDICT: Cycle time accelerated. Proceed to Step 5.`);
+      results.push(`→ VERDICT: Choose one — CYCLE_REDUCED | BOTTLENECK_IDENTIFIED | ALREADY_OPTIMAL`);
       results.push(``);
     }
 
@@ -391,7 +486,7 @@ The order is the algorithm. Break the order, break the result.`,
       results.push(`  • What is the ROI vs execution frequency?`);
       results.push(`  • Can we automate detection before response?`);
       results.push(`  • Is this process stable enough to automate?`);
-      results.push(`→ VERDICT: Automation applied.`);
+      results.push(`→ VERDICT: Choose one — AUTOMATED | PARTIAL | NOT_READY`);
       results.push(``);
     }
 
@@ -412,35 +507,19 @@ The order is the algorithm. Break the order, break the result.`,
 // ──────────────────────────────────────────────
 // Plugin Entry Point
 // ──────────────────────────────────────────────
-const TRIGGER_KEYWORDS = [
-  "optimize",
-  "optimization",
-  "refactor",
-  "speed up",
-  "too slow",
-  "bottleneck",
-  "delete",
-  "remove",
-  "simplify",
-  "automate",
-  "cycle time",
-  "waste",
-  "bloat",
-  "inefficient",
-  "technical debt",
-  "process improvement",
-  "first principles",
-];
 
-function containsTriggerKeyword(text: string): string | null {
-  const lower = text.toLowerCase();
-  for (const kw of TRIGGER_KEYWORDS) {
-    if (lower.includes(kw)) return kw;
+function containsTriggerKeyword(text: string, keywords: string[]): string | null {
+  for (const kw of keywords) {
+    const pattern = kw.includes(" ") ? kw : `\\b${kw}\\b`;
+    const re = new RegExp(pattern, "i");
+    if (re.test(text)) return kw;
   }
   return null;
 }
 
-const elonMuskAlgorithmPlugin: Plugin = async (_ctx) => {
+const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
+  const config = loadConfig(worktree);
+
   const hooks: Hooks = {
     // Register all 5 step tools + meta tool
     tool: {
@@ -452,13 +531,25 @@ const elonMuskAlgorithmPlugin: Plugin = async (_ctx) => {
       "elon-apply": elonApply,
     },
 
+    // System prompt injection — ambient algorithm reasoning
+    "experimental.chat.system.transform": async (_input, output) => {
+      if (config.mode === "full") {
+        output.system.push(SYSTEM_PROMPT_FULL);
+      } else if (config.mode === "gentle") {
+        output.system.push(SYSTEM_PROMPT_GENTLE);
+      } else {
+        output.system.push(SYSTEM_PROMPT_STEPS_ONLY);
+      }
+    },
+
+    // Keyword-aware prompting — suggests algorithm when relevant terms appear
     "chat.message": async (input, output) => {
       const userText = output.parts
         .filter((p): p is TextPart => p.type === "text")
         .map((p) => p.text)
         .join(" ");
 
-      const match = containsTriggerKeyword(userText);
+      const match = containsTriggerKeyword(userText, config.keywords);
       if (match) {
         const part: TextPart = {
           id: crypto.randomUUID(),
@@ -471,6 +562,16 @@ const elonMuskAlgorithmPlugin: Plugin = async (_ctx) => {
       }
     },
 
+    // <step_done> detection — strips tags and logs progress
+    "experimental.text.complete": async (input, output) => {
+      const tagMatch = output.text.match(/<step_done\s+step=["']?(\d)["']?\s*\/?>/i);
+      if (tagMatch) {
+        const step = parseInt(tagMatch[1], 10);
+        output.text = output.text.replace(tagMatch[0], "").trim();
+      }
+    },
+
+    // /elon-algorithm command handler
     "command.execute.before": async (input, output) => {
       if (input.command !== "elon-algorithm") return;
 
@@ -519,3 +620,4 @@ const elonMuskAlgorithmPlugin: Plugin = async (_ctx) => {
 
 export default elonMuskAlgorithmPlugin;
 export { elonMuskAlgorithmPlugin };
+export { elonMuskAlgorithmPlugin as server };

@@ -1,0 +1,17 @@
+{
+  "$schema": "./elon.schema.json",
+  "mode": "full",
+  "notifications": false,
+  "keywords": [
+    "optimize",
+    "automate",
+    "bottleneck",
+    "cycle time",
+    "bloat",
+    "waste",
+    "inefficient",
+    "technical debt",
+    "first principles",
+    "too slow"
+  ]
+}

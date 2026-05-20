@@ -1,7 +1,7 @@
 # Elon Musk's Algorithm — opencode Plugin
 
 > **Question. Delete. Simplify. Accelerate. Automate.**
-> A strict 5-step engineering algorithm, distilled from Elon Musk's approach to building rockets, cars, tunnels, and software — now available as an opencode agentic coding workflow.
+> A strict 5-step engineering algorithm, distilled from Elon Musk's approach to building rockets, cars, tunnels, and software. This plugin turns the method into an agentic workflow for opencode.
 
 ---
 
@@ -24,6 +24,20 @@
 - [Examples](#examples)
 - [Development](#development)
 - [Philosophy](#philosophy)
+
+---
+
+---
+
+## How It Works
+
+The plugin operates on three complementary layers:
+
+**Ambient reasoning.** The algorithm is baked into every response via system prompt injection (`experimental.chat.system.transform`). The AI internalizes the 5-step sequence as its default thinking mode — questioning, deleting, simplifying, accelerating, and automating as a matter of course.
+
+**Enforced decisions.** Each step tool forces a concrete verdict (e.g., VALIDATED | FLAGGED | REJECTED). The AI must commit to exactly one outcome and delete the non-applicable options. No open checkboxes.
+
+**User-gated progression.** After completing each step, the AI emits a hidden `<step_done step="N">` tag. The plugin detects it via `experimental.text.complete`, strips it from the visible output, and waits for you to review and say "proceed" before the next step begins.
 
 ---
 
@@ -82,9 +96,9 @@ Arguments:
 
 Output:
   Deletion analysis with verdict:
-  🗑 DELETE — can be removed
-  ✂️ TRIM  — can be reduced but not eliminated
-  ✓ KEEP   — essential, proceed to Step 3
+  DELETE — can be removed
+  TRIM   — can be reduced but not eliminated
+  KEEP   — essential, proceed to Step 3
 ```
 
 **Deletion analysis:**
@@ -106,10 +120,10 @@ Arguments:
 
 Output:
   Simplification analysis with verdict:
-  🔧 SIMPLIFIED       — restructuring applied
-  ⚡ OPTIMIZED        — performance improved
-  ✓ BOTH              — simplification and optimization applied
-  ✓ ALREADY CLEAN     — no changes needed, proceed to Step 4
+  SIMPLIFIED       — restructuring applied
+  OPTIMIZED        — performance improved
+  BOTH             — simplification and optimization applied
+  ALREADY_CLEAN    — no changes needed, proceed to Step 4
 ```
 
 **Simplification targets:**
@@ -132,6 +146,11 @@ Arguments:
 
 Output:
   Cycle time analysis with acceleration plan
+
+Verdict tokens (required):
+  CYCLE_REDUCED         — measurable cycle time improvement planned or achieved
+  BOTTLENECK_IDENTIFIED — a bottleneck has been found and isolated
+  ALREADY_OPTIMAL       — no meaningful cycle time gains available
 ```
 
 **Acceleration targets:**
@@ -154,6 +173,11 @@ Arguments:
 
 Output:
   Automation analysis with implementation plan
+
+Verdict tokens (required):
+  AUTOMATED  — ready for full automation, implementation plan provided
+  PARTIAL    — partial automation recommended, manual guardrails remain
+  NOT_READY  — automation would lock in waste, revisit earlier steps
 ```
 
 **Automation targets:**
@@ -247,41 +271,53 @@ Outputs a formatted protocol with all 5 steps ready to execute, including direct
 
 ### Automatic Triggers
 
-The plugin monitors chat messages for keywords related to engineering improvement. When you mention any of the following, it suggests running the algorithm:
+The plugin watches chat messages for a short set of whole-word trigger keywords. When a whole-word match occurs it suggests running the algorithm. The default list is intentionally narrow.
+
+Default keyword list, exact whole-word matching:
 
 ```
-optimize, optimization, refactor, speed up, too slow, bottleneck,
-delete, remove, simplify, automate, cycle time, waste, bloat,
-inefficient, technical debt, process improvement, first principles
+optimize
+automate
+bottleneck
+cycle time
+bloat
+waste
+inefficient
+technical debt
+first principles
+too slow
 ```
 
-Example: If you write "This function is too slow, we need to optimize it," the plugin automatically adds:
+Example: If you write "This function is too slow, we need to optimize it," the plugin will add:
 
 > 💡 **Tip:** You mentioned "too slow" — consider running `/elon-algorithm` to apply Elon Musk's 5-step engineering algorithm.
 
-This is a nudge, not a blocker — the algorithm must be explicitly invoked.
+This suggestion is a nudge, not an automatic run. The user must explicitly invoke the command or call the tools.
 
 ---
 
 ## Architecture
 
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    opencode Agent                                │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Plugin: @opencode-ai/elon-musk-algorithm                 │  │
-│  │                                                           │  │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌───────────────────┐ │  │
-│  │  │ Step Tools   │  │ Meta Tool   │  │ Hooks             │ │  │
-│  │  │             │  │             │  │                   │ │  │
-│  │  │ elon-question│  │ elon-apply  │  │ chat.message      │ │  │
-│  │  │ elon-delete  │  │ (runs all   │  │ (keyword trigger)  │ │  │
-│  │  │ elon-simplify│  │  5 steps)   │  │                   │ │  │
-│  │  │ elon-accel.  │  │             │  │ command.exec.before│ │  │
-│  │  │ elon-automate│  │             │  │ (/elon-algorithm)  │ │  │
-│  │  └─────────────┘  └─────────────┘  └───────────────────┘ │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          opencode Agent                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │  Plugin: @opencode-ai/elon-musk-algorithm                           │  │
+│  │                                                                     │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────────────┐ │  │
+│  │  │ Step Tools   │  │ Meta Tool   │  │ Hooks / System Integration   │ │  │
+│  │  │              │  │             │  │                              │ │  │
+│  │  │ elon-question│  │ elon-apply  │  │ experimental.chat.system.transform │ │  │
+│  │  │ elon-delete  │  │ (runs all   │  │ (system prompt injection)     │ │  │
+│  │  │ elon-simplify│  │  5 steps)   │  │ chat.message                  │ │  │
+│  │  │ elon-accelerate││             │  │ (keyword trigger, whole-word) │ │  │
+│  │  │ elon-automate │  │             │  │ command.exec.before (/elon-algorithm)│ │
+│  │  └─────────────┘  └─────────────┘  │ experimental.text.complete      │ │  │
+│  │                                     │ (<step_done> detection & strip)│ │  │
+│  │                                     └──────────────────────────────┘ │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Plugin Structure
@@ -294,29 +330,48 @@ src/
 tsconfig.json           — TypeScript configuration for building
 package.json            — Package manifest (@opencode-ai/elon-musk-algorithm)
 opencode.jsonc          — opencode config referencing the plugin
+elon.json               — Optional runtime configuration (project root)
+CONTEXT.md              — Project context injected into system prompt
 ```
 
 ### Key Design Decisions
 
-**Tools over system prompt injection.** Unlike many opencode plugins that modify the system prompt to steer behavior, this plugin provides explicit, callable tools. The agent must intentionally invoke a step — the algorithm is a deliberate framework, not an ambient nudge. This prevents algorithm fatigue and keeps the workflow honest.
+Key design notes:
 
-**The order is enforced by design, not code.** Steps 1-5 are individual tools. There is no runtime check preventing Step 5 before Step 1 — the enforcement is philosophical and structural. The tool descriptions, the slash command output, and the meta-tool all emphasize the sequence. The agent learns that breaking the order produces meaningless results.
-
-**Keyword awareness is advisory, not prescriptive.** The `chat.message` hook detects relevant keywords and suggests the algorithm, but never auto-executes or blocks. This respects the user's agency while ensuring the algorithm is top-of-mind.
+- System prompt injection is part of the design. The plugin loads a concise system transform via experimental.chat.system.transform so the agent's ambient reasoning follows the algorithm. Tools still exist to force decisions.
+- Each step tool forces one concrete verdict token. Tools do not return open checklists, they return a single, final verdict and a short justification.
+- The agent signals step completion by emitting <step_done step="N">. experimental.text.complete is used to detect that tag. The plugin strips it before sending the visible result, then waits for the user to say "proceed" to continue.
+- The meta tool elon-apply runs all five steps in sequence, you may skip steps with skipSteps. Skipping still requires the agent to emit verdicts for executed steps.
+- Keyword triggers use whole-word matching and a short, curated list. They nudge, they do not auto-run the algorithm.
 
 ---
 
 ## Configuration
 
-The plugin requires no configuration. It works out of the box with:
+The plugin reads elon.json from the project root if present. Defaults work out of the box, but elon.json makes behavior explicit.
 
-- opencode v1.15.4+
-- Node.js / Bun
+Supported fields in elon.json:
 
-If you want to customize behavior, the plugin currently supports:
+- `mode`: "full" | "gentle" | "steps-only"
+  - Controls how verbose the system prompt injection is. "full" gives detailed ambient guidance, "gentle" nudges only, "steps-only" limits system transform to a one-line reminder of the sequence.
+- `notifications`: boolean
+  - If true, macOS notifications are emitted when a step completes.
+- `keywords`: string[]
+  - Replace or extend the default trigger keyword list. Matching remains whole-word.
 
-- **Custom trigger keywords** — modify the `TRIGGER_KEYWORDS` array in `src/index.ts` (requires rebuild)
-- **Step skipping** via the `skipSteps` parameter on `elon-apply`
+Example elon.json:
+
+```json
+{
+  "mode": "gentle",
+  "notifications": true,
+  "keywords": ["too slow", "bottleneck", "technical debt"]
+}
+```
+
+Notes:
+- If elon.json is missing, sensible defaults are used.
+- `keywords` overrides the default list. The plugin still enforces whole-word matching.
 
 ---
 
@@ -325,20 +380,24 @@ If you want to customize behavior, the plugin currently supports:
 ### Example 1: Refactoring a Legacy Module
 
 ```
-User: This payment processor has 3,000 lines of spaghetti code.
-      We need to refactor it.
+User: This payment processor is too slow, it's a bottleneck for payouts.
 
-Plugin: 💡 Tip: You mentioned "refactor" — consider running
+Plugin: 💡 Tip: You mentioned "too slow" and "bottleneck" — consider running
         /elon-algorithm to apply the 5-step algorithm.
 
 User: /elon-algorithm refactor the payment processor
 
-Plugin outputs protocol:
-  Step 1 — Question: Who wrote the original requirements?
-  Step 2 — Delete: Can we eliminate dead code paths?
-  Step 3 — Simplify: What's the minimal interface?
-  Step 4 — Accelerate: How fast can we ship iterations?
-  Step 5 — Automate: What tests should run automatically?
+Plugin outputs protocol, then runs Step 1 when asked:
+  Step 1 — Question: Who wrote the original requirements?  VERDICT: VALIDATED
+  <step_done step="1">  <-- detected and stripped, waiting for user
+
+User: proceed
+
+Plugin runs Step 2 and returns a single verdict token and a short plan:
+  Step 2 — DELETE  — remove legacy webhook handler, justify and list tests to monitor
+  <step_done step="2">  <-- detected and stripped
+
+...and so on through Step 5. Each tool returns one verdict token from its allowed set.
 ```
 
 ### Example 2: Architecture Review
@@ -379,6 +438,7 @@ Tool output includes:
   • Parallelize: Split test suite into 4 parallel groups
   • Reduce handoffs: Merge lint + type-check into one stage
   • Shorten feedback: Fail fast on compilation errors
+  VERDICT: BOTTLENECK_IDENTIFIED
 ```
 
 ---
@@ -412,6 +472,8 @@ pi_elon_algorithm_plugin/
 ├── src/
 │   └── index.ts          # Plugin source
 ├── dist/                 # Compiled output
+├── elon.json             # Runtime configuration
+├── CONTEXT.md            # Project glossary
 ├── opencode.jsonc        # opencode configuration
 ├── package.json          # Package manifest
 ├── tsconfig.json         # TypeScript configuration
