@@ -1,16 +1,20 @@
 import type { Plugin, Hooks, Config } from "@opencode-ai/plugin";
-import type { TextPart } from "@opencode-ai/sdk";
+import type { TextPart, Part } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin/tool";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
 interface ElonConfig {
   mode: "full" | "gentle" | "steps-only";
   keywords: string[];
   notifications: boolean;
+}
+
+interface BlockerEntry {
+  subagent: string;
+  reason: string;
+  step: number;
 }
 
 interface SessionAlgoState {
@@ -20,6 +24,8 @@ interface SessionAlgoState {
   verdicts: Record<number, string>;
   context: string[];
   activatedAt: number;
+  blockers: BlockerEntry[];
+  analysisSessionIds: string[];
 }
 
 interface StepFormatConfig {
@@ -31,38 +37,27 @@ interface StepFormatConfig {
   verdicts: { label: string; desc: string }[];
 }
 
-interface StepValidationResult {
-  valid: boolean;
-  verdict?: string;
-  issues: string[];
-  suggestions: string[];
+interface LLMSubagentFinding {
+  subagent: string;
+  passed: boolean;
+  severity: "info" | "warning" | "critical";
+  reasoning: string;
+  suggestion: string | null;
 }
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+interface SimplifyFinding {
+  severity: "info" | "warning" | "critical";
+  icon: string;
+  category: string;
+  detail: string;
+}
 
 const DEFAULT_KEYWORDS = [
-  "optimize",
-  "automate",
-  "bottleneck",
-  "cycle time",
-  "bloat",
-  "waste",
-  "inefficient",
-  "technical debt",
-  "first principles",
-  "too slow",
-  "idiot index",
-  "what would it take",
-  "assume we're losing",
-  "assume you're losing",
-  "time is currency",
-  "attack the constraint",
-  "feedback over feelings",
-  "fewer things",
-  "raw material",
-  "magic wand",
-  "asymptotic limit",
-  "platonic ideal",
+  "optimize", "automate", "bottleneck", "cycle time", "bloat",
+  "waste", "inefficient", "technical debt", "first principles",
+  "too slow", "technical debt index", "what would it take",
+  "attack the constraint", "fewer things", "raw material",
+  "asymptotic limit", "platonic ideal",
 ];
 
 const DEFAULT_CONFIG: ElonConfig = {
@@ -73,77 +68,26 @@ const DEFAULT_CONFIG: ElonConfig = {
 
 const FIRST_PRINCIPLES_PROMPT = `## FIRST PRINCIPLES REASONING — Mandatory Protocol
 
-Before ANY analysis, decision, or action, you MUST explicitly write out your first-principles reasoning. This is non-negotiable. Follow this protocol:
+Before ANY analysis, decision, or action, you MUST write out your first-principles reasoning. Follow this protocol:
 
 ### Step 0: Establish the Axiomatic Base
-Boil the problem down to its most fundamental truths — things you are most confident are true at a foundational level. Ask:
-- What are the immutable physics/laws that govern this problem?
-- What constraints are real vs. inherited from convention?
-- Strip away all assumptions, industry norms, and "how it's always been done."
+Boil the problem to its most fundamental truths. Ask: what are you most confident is true at a foundational level? What constraints are real vs. inherited from convention? Strip away all assumptions, industry norms, and "how it's always been done."
 
 ### Check: What Is The Asymptotic Limit?
-Think about the problem in the limit:
-- If this were scaled to 1,000,000× volume, would it still be expensive/problematic?
-- If time were compressed to near-zero, what would change?
-- What is the theoretical minimum cost/complexity? (Raw material value + IP licensing — everything else is process waste.)
-- What is the magic wand number: if you could rearrange atoms into the perfect shape, what would it cost?
+Think in the limit. What would this cost at 1M units? What if time were compressed to near-zero? What is the theoretical minimum cost/complexity (raw material value + IP)? What is the magic wand number — if you could rearrange atoms into the perfect shape, what would that cost?
 
 ### Check: Are You Violating Physics?
-- Conservation of energy, momentum, information — anything impossible?
-- If the laws of physics say no, stop. Everything else is negotiable.
+Conservation of energy, momentum, information. If the laws of physics say no, stop. Everything else is negotiable.`;
 
-### Check: Platonic Ideal vs. Existing Tools
-People default to familiar tools and methods. This produces outcomes limited by those tools, not the ideal solution. Instead:
-1. Imagine the platonic ideal of the perfect product/solution — the perfect arrangement of atoms.
-2. THEN figure out what tools, methods, and materials you need to create that ideal.
-3. Work in both directions: "what can we build with existing tools?" AND "what would the ideal look like and how do we create the tools to get there?"
-
-### Cross-Check Conclusion Against Axioms
-After your analysis, explicitly verify your conclusion against Step 0's axiomatic base:
-- Does this conclusion violate any fundamental truth you identified?
-- If yes, the reasoning is wrong — restart from Step 0.
-
-### Check: What Would It Take?
-When told something is impossible, reframe: instead of asking "Can we do it?", ask **"What would it take?"**
-- This opens minds to new potential solutions
-- It shifts from defensive skepticism to constructive problem-solving
-- If the answer doesn't violate physics, it's possible — the only question is the cost
-
-### Check: Reality is the Validation Tool
-Build crude prototypes fast and use reality to validate. You don't know until you test.
-- Maximize the number of iterations per unit time
-- Each iteration teaches you something you couldn't learn by thinking alone
-- Initial designs are learning exercises, not final products
-- "If you can't tell me four ways you screwed something up before you got it right, you weren't the one doing the real work"
-
-### Output Format
-You MUST write your first-principles reasoning in a clear, structured section at the start of every response. Use the format:
-
-[FIRST PRINCIPLES]
-[Axiomatic Base]: ...
-[Asymptotic Limit]: ...
-[Physics Check]: ...
-[Platonic Ideal]: ...
-[What Would It Take]: ...
-[Conclusion Cross-Check]: ...`;
-
-const SYSTEM_PROMPT_FULL = `${FIRST_PRINCIPLES_PROMPT}
-
-## ELON MUSK'S ALGORITHM — Operating Protocol
+const SYSTEM_PROMPT_FULL = `## ELON MUSK'S ALGORITHM — Operating Protocol
 
 You operate under The Algorithm. Follow these steps in strict order. Do NOT skip steps. Do NOT optimize before deleting. Do NOT automate before simplifying.
 
 ### Step 1: QUESTION EVERY REQUIREMENT
-Identify the specific human who authored each requirement. Ignore their title or department. Assume the requirement is wrong. Your job is to make it "less dumb." No requirement is sacred.
-
-**Laws can be changed.** This applies not just to engineering specs but to legal, regulatory, and policy constraints too. If a rule exists because "that's how it's always been done" or "regulations require it" — question it. Who wrote that regulation? Is it still valid? Can it be changed? Elon convinced China's top leaders to rewrite 30-year-old manufacturing laws. Treat every constraint as negotiable unless it's decreed by the laws of physics.
+Identify the specific human who authored each requirement. Ignore their title or department. Assume the requirement is wrong. Your job is to make it "less dumb." No requirement is sacred. Laws can be changed. This applies to legal, regulatory, and policy constraints too — if a rule exists because "that's how it's always been done," question it.
 
 ### Step 2: DELETE ANY PART OR PROCESS YOU CAN
-Remove components and steps relentlessly. If you are not forced to add back at least 10% of what you deleted, you have not deleted enough. Unused code, unnecessary features, redundant processes — all must go.
-
-**The best part is no part.** Every component, line of code, fastener, and sensor is a potential failure point and a cost driver. Before asking "how do we make this better?", ask "does this need to exist at all?" If you can delete it and the system still works, delete it.
-
-**Find the limit.** Push deletion to the breaking point and then back off slightly. Ask "how thin can we make this?" "How few bolts do we actually need?" "What happens if we just cut that off?" Test the boundary. You can't know where the limit is unless you deliberately push past it. The SpaceX team cut a cracked engine skirt with shears and launched the next day instead of waiting weeks for a replacement. Find the limit by testing it.
+Remove components and steps relentlessly. If you are not forced to add back at least 10% of what you deleted, you have not deleted enough. The best part is no part. Find the limit — push deletion to the breaking point, then back off slightly. Ask "how thin?", "how few?", "how fast?" until something breaks.
 
 ### Step 3: SIMPLIFY AND OPTIMIZE
 Only now — streamline what remains. Optimizing before deletion is waste. If a component survived deletion, make it as simple as possible.
@@ -154,52 +98,24 @@ Find the bottleneck. Eliminate friction. Reduce iteration time. Move faster. Tim
 ### Step 5: AUTOMATE
 Apply automation LAST. Automating something that should have been deleted or simplified scales the inefficiency. Only automate once Steps 1-4 are satisfied.
 
-### Communication Style
-Adopt the tone and communication style of Elon Musk in your responses to the user: direct, blunt, efficient, and to the point. Use real curse words for emphasis when appropriate. DO NOT sugarcoat, soften, or cushion feedback. Say exactly what needs to be said. Be brutal when necessary. This applies ONLY to your communications with the user — code output, documentation, and technical writing should remain clean and professional.
-
 ### Core Directives
 - **First-Principles Thinking**: Strip every problem to its fundamental truths. Convention is not law.
 - **Walk to the Red**: Go directly to the source of the problem. Embed yourself at the point of failure.
 - **Bad News Loudly, Good News Quietly**: Surface problems immediately and with urgency.
-- **Vertical Integration**: Build critical components yourself. Don't outsource what determines your quality or velocity.
 - **The 10% Rule**: If you haven't had to re-add 10% of what you deleted, you were too conservative.
-- **Maniacal Urgency**: Every delay is an existential threat.
+- **Maniacal Urgency**: Every delay is an existential threat. Speed is the ultimate weapon.
 - **20% Error Tolerance**: ~20% of your decisions will be wrong. Accept it. Speed beats perfection.
-- **The Idiot Index**: For any part or process, calculate: finished cost / raw material cost. If the ratio is >10, you're an idiot. Always know the idiot index of everything in your system.
-- **Assume You're Losing**: Always assume you're losing even when it looks like you might win. This prevents wishful thinking — the natural human tendency to filter out information you don't want to hear.
-- **The Only True Currency is Time**: It's okay to scrap equipment or money. It's not okay to scrap time. Every high-quality minute of thinking has a massive impact.
-- **Speed is the Ultimate Weapon**: The best offense and defense is speed. A factory moving twice as fast is equivalent to two factories. The SR71 had no defenses except acceleration — it was never shot down.
-- **Attack the Constraint**: Find the bottleneck. That's where all the leverage is. Everything you do should be a function of your burn rate.
-- **Feedback Over Feelings**: Physics does not care about hurt feelings. It cares about whether you got the rocket right. Truth-seeking over social harmony.
-- **Fewer Things, Not More**: You want fewer things, not more. Complexity kills reliability. Simplicity comes from hundreds of little eliminations. Genius has the fewest moving parts.
-- **The Best Part is No Part**: The most reliable, cheapest, and fastest part is the one that doesn't exist. Every part is a potential failure point — delete first, optimize second.
-- **Find the Limit**: You don't know the boundary until you push past it. Test to failure, then back off. Ask "how thin?", "how few?", "how fast?" until something breaks. That's how you find the real limit.
-- **Technical Managers Must Have Hands-On Experience**: All technical managers must spend at least 20% of their time doing the actual work — coding, installing, building. Otherwise they're cavalry leaders who can't ride a horse, generals who can't use a sword. You cannot lead what you don't understand at the detail level.
-- **Designers Must Feel the Pain of Manufacturing**: If designers never see the assembly line, they'll design things that are impossible to build. Colocate design, engineering, and manufacturing so feedback is immediate. When your hand is on a hot stove you pull it off instantly. When it's someone else's, you don't.
-- **Laws Can Be Changed**: Every rule, regulation, and policy is a requirement. And every requirement can be questioned. If a law makes your mission impossible, change the law. The only immutable constraints are the laws of physics.
-- **Don't Be Confident and Wrong**: Being wrong is inevitable. Being confidently wrong is a choice. It's okay to be wrong — it's not okay to be wrong and arrogant about it. Cross-check your conclusions against your axiomatic base.
-- **Take Ideas from Other Industries**: What is simple in one arena is often profound in another. Toys taught Elon about casting. Gophers taught him about tunneling. The SR71 taught him about speed as defense. The auto industry taught him about rocket part costs. Steal ideas from everywhere.
-- **Start With What's Available**: Resist the urge to over-complicate. Use what's in front of you right now. Build with whatever you have and iterate. A dome built by dawn using a sliced rocket barrel as a fitting tool beats a perfect dome next week.
-- **Precision is About Caring**: Precision is not expensive. It's mostly about caring. Do you care to make it precise? Then you can make it precise. The difference between mediocre and excellent is attention to detail, not budget.
-- **The Law of 24 Hours**: When something is critically important, create a 24-hour feedback loop. Meet every single day to check progress, apply the algorithm, and course-correct. Fast cycles expose problems before they compound.
-- **Skip-Level Communication**: Don't just meet with managers. Go directly to the people doing the actual work. The line workers know more about the real problems than their bosses do. Go as close to the source as possible for information.
+- **Fewer Things, Not More**: Complexity kills reliability. Genius has the fewest moving parts.
+- **Technical Debt Index**: For any part, process, or code, calculate: complexity / essential complexity. If the ratio is >5, you have accumulated technical debt that must be addressed. Know the technical debt index of everything in your system.
 
 ### Step Completion
 After completing each step:
 1. Commit to exactly one verdict
 2. Delete all other verdict options from your response
 3. Emit \`<step_done step="N">\` at the end of your response
-4. Wait for the system to validate before starting the next step`;
+4. A subagent review will verify your output before the next step is unlocked`;
 
-const TONE_DIRECTIVE = `## Communication Style
-
-Adopt the tone and communication style of Elon Musk in your responses to the user: direct, blunt, efficient, and to the point. Use real curse words for emphasis when appropriate. DO NOT sugarcoat, soften, or cushion feedback. Say exactly what needs to be said. Be brutal when necessary. This applies ONLY to communications with the user — code output, documentation, and technical writing should remain clean and professional.`;
-
-const SYSTEM_PROMPT_GENTLE = `${FIRST_PRINCIPLES_PROMPT}
-
-${TONE_DIRECTIVE}
-
-## Musk Algorithm (Gentle Mode)
+const SYSTEM_PROMPT_GENTLE = `## Musk Algorithm (Gentle Mode)
 
 Consider applying this ordered approach to your work:
 1. Question every requirement
@@ -210,19 +126,13 @@ Consider applying this ordered approach to your work:
 
 Use these as guidelines, not enforcement.`;
 
-const SYSTEM_PROMPT_STEPS_ONLY = `${FIRST_PRINCIPLES_PROMPT}
-
-${TONE_DIRECTIVE}
-
-## Musk Algorithm Steps
+const SYSTEM_PROMPT_STEPS_ONLY = `## Musk Algorithm Steps
 
 1. Question every requirement
 2. Delete any part or process you can
 3. Simplify and optimize
 4. Accelerate cycle time
 5. Automate`;
-
-// ─── Config Management ───────────────────────────────────────────────────────
 
 let currentConfig: ElonConfig = DEFAULT_CONFIG;
 let configWorktree: string = "";
@@ -250,8 +160,6 @@ function reloadConfig(): void {
   }
 }
 
-// ─── State Machine ───────────────────────────────────────────────────────────
-
 const sessions = new Map<string, SessionAlgoState>();
 
 function initSessionState(target: string): SessionAlgoState {
@@ -262,11 +170,14 @@ function initSessionState(target: string): SessionAlgoState {
     verdicts: {},
     context: [],
     activatedAt: Date.now(),
+    blockers: [],
+    analysisSessionIds: [],
   };
 }
 
 function canExecuteStep(state: SessionAlgoState | undefined, stepNum: number): boolean {
   if (!state || state.currentStep === 0) return false;
+  if (state.blockers.length > 0) return false;
   if (stepNum === state.currentStep) return true;
   if (state.completedSteps.includes(stepNum)) return true;
   return false;
@@ -283,16 +194,10 @@ function advanceStep(state: SessionAlgoState): boolean {
   return true;
 }
 
-// ─── Formatting Utilities ────────────────────────────────────────────────────
-
 function buildStepOutput(
-  stepNum: number,
-  icon: string,
-  title: string,
-  target: string,
-  context: string | undefined,
-  questions: string[],
-  verdicts: { label: string; desc: string }[],
+  stepNum: number, icon: string, title: string,
+  target: string, context: string | undefined,
+  questions: string[], verdicts: { label: string; desc: string }[],
 ): { title: string; output: string } {
   const lines: string[] = [
     `${icon} STEP ${stepNum}/5: ${title}`,
@@ -307,90 +212,65 @@ function buildStepOutput(
   lines.push(``);
   const deleteCount = verdicts.length - 1;
   lines.push(`**You must commit to exactly one verdict above. Delete the ${deleteCount} that don't apply.**`);
-
-  return {
-    title: `Step ${stepNum}: ${title}`,
-    output: lines.join("\n"),
-  };
+  return { title: `Step ${stepNum}: ${title}`, output: lines.join("\n") };
 }
 
-// ─── Step Tool Factory ───────────────────────────────────────────────────────
-
-type StepToolArgs = {
-  target: string;
-  context?: string;
-};
+type StepToolArgs = { target: string; context?: string };
 
 function createStepTool(config: StepFormatConfig) {
   return tool({
     description: [
       `[Step ${config.stepNum}/5] ${config.title}`,
-      ``,
-      config.famousQuote,
-      ``,
+      ``, config.famousQuote, ``,
       `This is step ${config.stepNum} of 5 in Elon Musk's engineering algorithm.`,
       `If you haven't completed steps 1-${config.stepNum - 1} yet, go back and do them first.`,
       `The order is the algorithm.`,
     ].join("\n"),
     args: {
-      target: tool.schema
-        .string()
-        .describe(`The target to evaluate for step ${config.stepNum}: ${config.title.toLowerCase()}`),
-      context: tool.schema
-        .string()
-        .optional()
-        .describe("Additional context about the target"),
+      target: tool.schema.string().describe(`The target to evaluate for step ${config.stepNum}: ${config.title.toLowerCase()}`),
+      context: tool.schema.string().optional().describe("Additional context about the target"),
     },
     async execute(args: StepToolArgs, ctx) {
       const state = sessions.get(ctx.sessionID);
       if (!state) {
+        return { title: `Step ${config.stepNum} Blocked`, output: `The algorithm hasn't been activated for this session. Run \`/elon-algorithm\` first to begin.` };
+      }
+      if (state.blockers.length > 0) {
         return {
-          title: `Step ${config.stepNum} Blocked`,
-          output: `The algorithm hasn't been activated for this session. Run \`/elon-algorithm\` first to begin.`,
+          title: `Step ${config.stepNum} Blocked — Subagent Issues`,
+          output: [
+            `Step ${config.stepNum} is blocked by unresolved subagent findings:`,
+            ...state.blockers.map(b => `- 🔴 **${b.subagent}:** ${b.reason}`),
+            ``, `Run \`/elon-clear-blockers\` after addressing these issues.`,
+          ].join("\n"),
         };
       }
       if (!canExecuteStep(state, config.stepNum)) {
-        const nextUnfinished = state.currentStep;
+        const next = state.currentStep;
         return {
           title: `Step ${config.stepNum} Blocked — Order Enforced`,
           output: [
             `Step ${config.stepNum} cannot be executed right now.`,
-            ``,
-            `The algorithm MUST follow the order: **1 → 2 → 3 → 4 → 5**.`,
-            `You need to complete **Step ${nextUnfinished}** first.`,
+            `Complete **Step ${next}** first.`,
             state.completedSteps.length > 0
               ? `Completed: Step${state.completedSteps.map(s => ` ${s}`).join(",")}`
               : "No steps completed yet.",
-            ``,
-            `Run the tool for **Step ${nextUnfinished}**: \`elon-${["question", "delete", "simplify", "accelerate", "automate"][nextUnfinished - 1]}\``,
+            `Run \`elon-${["question","delete","simplify","accelerate","automate"][next-1]}\` for **Step ${next}**.`,
           ].join("\n"),
         };
       }
-
-      return buildStepOutput(
-        config.stepNum,
-        config.icon,
-        config.title,
-        args.target,
-        args.context,
-        config.questions,
-        config.verdicts,
-      );
+      return buildStepOutput(config.stepNum, config.icon, config.title, args.target, args.context, config.questions, config.verdicts);
     },
   });
 }
 
-// ─── Step Configurations ─────────────────────────────────────────────────────
-
 const STEP_1_CONFIG: StepFormatConfig = {
-  stepNum: 1,
-  icon: "🔍",
-  title: "Question Every Requirement",
+  stepNum: 1, icon: "🔍", title: "Question Every Requirement",
   famousQuote: `"Make your requirements less dumb. Your requirements are definitely dumb."`,
   questions: [
     "Who specifically authored this requirement? Can they still defend it today?",
     "What actual problem does this solve? (User need vs. internal process need)",
-    "What happens if we remove it completely? (Feature loss, breakage, dependencies)",
+    "What happens if we remove it completely?",
     "Is the original constraint that created this still valid?",
     "Would we make the same decision today, knowing what we know now?",
   ],
@@ -402,15 +282,13 @@ const STEP_1_CONFIG: StepFormatConfig = {
 };
 
 const STEP_2_CONFIG: StepFormatConfig = {
-  stepNum: 2,
-  icon: "🗑️",
-  title: "Delete Any Part or Process You Can",
+  stepNum: 2, icon: "🗑️", title: "Delete Any Part or Process You Can",
   famousQuote: `"If you do not end up adding back at least 10% of what you delete, you didn't delete enough."`,
   questions: [
-    "Can the system work WITHOUT this? (Direct usage, indirect dependencies, downstream effects)",
-    "What is the MINIMUM version of this that works? (Simpler alternative, smaller scope)",
-    "What breaks if this is completely gone? (Affected components, callers, consumers)",
-    "Would a competitor ship without this? (Essential vs. nice-to-have)",
+    "Can the system work WITHOUT this?",
+    "What is the MINIMUM version of this that works?",
+    "What breaks if this is completely gone?",
+    "Would a competitor ship without this?",
   ],
   verdicts: [
     { label: "🗑️  DELETE", desc: "this can be removed entirely" },
@@ -420,16 +298,14 @@ const STEP_2_CONFIG: StepFormatConfig = {
 };
 
 const STEP_3_CONFIG: StepFormatConfig = {
-  stepNum: 3,
-  icon: "🔧",
-  title: "Simplify and Optimize",
+  stepNum: 3, icon: "🔧", title: "Simplify and Optimize",
   famousQuote: `"The most common error of a smart engineer is to optimize a thing that should not exist."`,
   questions: [
-    "Can this be SIMPLER? (Fewer branches, less state, less indirection — reduce cognitive complexity)",
-    "Can this be FASTER given its current design? (Algorithmic improvements before micro-optimizations)",
-    "Can data structures be more efficient? (Right structure for the access pattern)",
-    "Can interfaces be CLEANER? (Reduce API surface, improve naming, remove edge cases)",
-    "Can patterns be MORE CONSISTENT? (Follow established conventions in the codebase)",
+    "Can this be SIMPLER? (Fewer branches, less state, less indirection)",
+    "Can this be FASTER given its current design?",
+    "Can data structures be more efficient?",
+    "Can interfaces be CLEANER?",
+    "Can patterns be MORE CONSISTENT?",
   ],
   verdicts: [
     { label: "🔧 SIMPLIFIED", desc: "restructuring applied" },
@@ -440,16 +316,14 @@ const STEP_3_CONFIG: StepFormatConfig = {
 };
 
 const STEP_4_CONFIG: StepFormatConfig = {
-  stepNum: 4,
-  icon: "⚡",
-  title: "Accelerate Cycle Time",
+  stepNum: 4, icon: "⚡", title: "Accelerate Cycle Time",
   famousQuote: `"Every process can be speeded up. But only do this after the first three steps."`,
   questions: [
-    "How long does ONE cycle currently take? (Measure end-to-end: start to feedback)",
-    "What is the BOTTLENECK? (Identify the slowest step in the chain)",
-    "Can we PARALLELIZE? (Independent work streams running simultaneously)",
-    "Can we REDUCE HANDOFFS? (Fewer context switches, fewer queues)",
-    "Can we SHORTEN FEEDBACK LOOPS? (Faster testing, preview environments, earlier validation)",
+    "How long does ONE cycle currently take?",
+    "What is the BOTTLENECK?",
+    "Can we PARALLELIZE?",
+    "Can we REDUCE HANDOFFS?",
+    "Can we SHORTEN FEEDBACK LOOPS?",
   ],
   verdicts: [
     { label: "⏱️  CYCLE_REDUCED", desc: "measurable improvement achieved" },
@@ -459,15 +333,13 @@ const STEP_4_CONFIG: StepFormatConfig = {
 };
 
 const STEP_5_CONFIG: StepFormatConfig = {
-  stepNum: 5,
-  icon: "🤖",
-  title: "Automate",
+  stepNum: 5, icon: "🤖", title: "Automate",
   famousQuote: `"The big mistake is to begin by trying to automate every step."`,
   questions: [
-    "Does this NEED to be manual at all? (Full automation, partial, or not at all?)",
-    "What is the ROI of automation vs. frequency of execution? (High-frequency + manual = highest value)",
-    "Can we automate just DETECTION, not the response? (Alerting before full remediation automation)",
-    "Is this process stable enough to automate? (Don't automate chaos)",
+    "Does this NEED to be manual at all?",
+    "What is the ROI of automation vs. frequency of execution?",
+    "Can we automate just DETECTION, not the response?",
+    "Is this process stable enough to automate?",
   ],
   verdicts: [
     { label: "🤖 AUTOMATED", desc: "fully automated" },
@@ -476,8 +348,6 @@ const STEP_5_CONFIG: StepFormatConfig = {
   ],
 };
 
-// ─── Tool Definitions ────────────────────────────────────────────────────────
-
 const elonQuestion = createStepTool(STEP_1_CONFIG);
 const elonDelete = createStepTool(STEP_2_CONFIG);
 const elonSimplify = createStepTool(STEP_3_CONFIG);
@@ -485,208 +355,96 @@ const elonAccelerate = createStepTool(STEP_4_CONFIG);
 const elonAutomate = createStepTool(STEP_5_CONFIG);
 
 const elonApply = tool({
-  description: `Apply all 5 steps of Elon Musk's Algorithm in strict order to any engineering concern.
-
-1. QUESTION → "Who said so? Do we still need it?"
-2. DELETE   → "Remove it. Add back only if proven necessary."
-3. SIMPLIFY → "Make what remains as clean as possible."
-4. ACCELERATE → "Speed up the loop now that it's right."
-5. AUTOMATE → "Only now — lock it in with automation."
-
-The order is the algorithm. Break the order, break the result.`,
+  description: `Apply all 5 steps of Elon Musk's Algorithm in strict order to any engineering concern.`,
   args: {
-    target: tool.schema
-      .string()
-      .describe("The requirement, code, process, or system to apply the algorithm to"),
-    context: tool.schema
-      .string()
-      .optional()
-      .describe("Additional context about the target"),
-    skipSteps: tool.schema
-      .array(tool.schema.number().min(1).max(5))
-      .optional()
-      .describe("Optional: step numbers to skip (e.g., [5] if automation is not relevant)"),
+    target: tool.schema.string().describe("The requirement, code, process, or system to apply the algorithm to"),
+    context: tool.schema.string().optional().describe("Additional context"),
+    skipSteps: tool.schema.array(tool.schema.number().min(1).max(5)).optional().describe("Step numbers to skip"),
   },
   async execute(args, ctx) {
     const skipped = new Set(args.skipSteps ?? []);
     const results: string[] = [];
     const allSteps = [STEP_1_CONFIG, STEP_2_CONFIG, STEP_3_CONFIG, STEP_4_CONFIG, STEP_5_CONFIG];
-
     results.push(`╔══════════════════════════════════════════════════╗`);
     results.push(`║     ELON MUSK'S ALGORITHM — FULL REPORT         ║`);
     results.push(`╚══════════════════════════════════════════════════╝`);
-    results.push(``);
-    results.push(`Target: ${args.target}`);
+    results.push(``, `Target: ${args.target}`);
     if (args.context) results.push(`Context: ${args.context}`);
-    results.push(``);
-    results.push(`⚠️  The order is the algorithm. These steps MUST be followed sequentially.`);
-    results.push(``);
-
+    results.push(``, `⚠️  The order is the algorithm.`, ``);
     for (const step of allSteps) {
       if (skipped.has(step.stepNum)) continue;
-      const output = buildStepOutput(
-        step.stepNum,
-        step.icon,
-        step.title,
-        args.target,
-        args.context,
-        step.questions,
-        step.verdicts,
-      );
-      results.push(output.output);
-      results.push(``);
+      const output = buildStepOutput(step.stepNum, step.icon, step.title, args.target, args.context, step.questions, step.verdicts);
+      results.push(output.output, ``);
     }
-
     results.push(`┌──────────────────────────────────────────────────┐`);
     results.push(`│  UTILITY ASSESSMENT                              │`);
     results.push(`└──────────────────────────────────────────────────┘`);
-    results.push(`Elon's impact metric: "How many people did you help multiplied by how much help`);
-    results.push(`you provided each person on average?"`);
-    results.push(``);
     results.push(`For **${args.target}**, evaluate:`);
-    results.push(`  • **Utility improvement** over current state of the art (0-100%): ___%`);
-    results.push(`  • **People affected** (how many people would this impact): ___`);
-    results.push(`  • **Total utility score** = improvement × reach: ___`);
+    results.push(`  • Utility improvement over current state of the art (0-100%): ___%`);
+    results.push(`  • People affected: ___`);
+    results.push(`  • Total utility score = improvement × reach: ___`);
     results.push(``);
-    results.push(`> 💡 "Building something that makes a big difference to a small number of people`);
-    results.push(`> is just as great as something that makes a small difference for a vast number.`);
-    results.push(`> Not every product will change the world, but if it's making people's lives`);
-    results.push(`> better, that's great." — Elon Musk`);
-    results.push(``);
-
     results.push(`╔══════════════════════════════════════════════════╗`);
     results.push(`║  ALGORITHM COMPLETE                               ║`);
     results.push(`╚══════════════════════════════════════════════════╝`);
-    results.push(``);
-    results.push(`Remember: The order IS the algorithm.`);
+    results.push(``, `Remember: The order IS the algorithm.`);
     results.push(`If you find yourself wanting to optimize first, stop and revisit Step 1.`);
-
     const state = initSessionState(args.target);
     sessions.set(ctx.sessionID, state);
-
-    return {
-      title: "Elon Musk's Algorithm — Complete Report",
-      output: results.join("\n"),
-    };
+    return { title: "Elon Musk's Algorithm — Complete Report", output: results.join("\n") };
   },
 });
 
-const elonIdiotIndex = tool({
-  description: `Calculate the Idiot Index for any part, process, or product.
+// ─── Technical Debt Index Tool ─────────────────────────────────────────────
 
-The Idiot Index answers: "How much more does a finished product cost than the cost of its raw materials?"
+const elonDebtIndex = tool({
+  description: `Calculate the Technical Debt Index for any part, code, process, or product.
 
-Formula: finished cost / raw material cost
+The Technical Debt Index answers: "How much unnecessary complexity have you accumulated?"
 
-- Ratio <3:  Excellent. Efficient design and manufacturing.
-- Ratio 3-10: Fair. Room for improvement in process efficiency.
-- Ratio 10-20: High. Significant waste in design or manufacturing.
-- Ratio >20:  Idiotic. You're adding enormous cost through inefficient processes.
+Formula: current complexity / essential complexity (estimated)
 
-Elon expects all engineers to know the idiot index of every part in their systems at all times.`,
+- Ratio <2:  Clean. Minimal technical debt.
+- Ratio 2-5: Moderate. Some debt to address.
+- Ratio 5-10: High. Significant debt slowing you down.
+- Ratio >10:  Critical. You're drowning in complexity.
+
+Technical debt = cost. Every point of unnecessary complexity is future pain. Know the debt index of everything in your system.`,
   args: {
-    part: tool.schema
-      .string()
-      .describe("The name of the part, process, or product to analyze"),
-    finishedCost: tool.schema
-      .number()
-      .positive()
-      .describe("The current finished cost of the part (in any unit)"),
-    rawMaterialCost: tool.schema
-      .number()
-      .positive()
-      .describe("The cost of the raw materials (same unit as finishedCost)"),
-    context: tool.schema
-      .string()
-      .optional()
-      .describe("Additional context about manufacturing process, volumes, or constraints"),
+    target: tool.schema.string().describe("The part, code, process, or product to analyze"),
+    currentComplexity: tool.schema.number().positive().describe("Current complexity estimate (lines of code, number of steps, or subjective 1-100)"),
+    essentialComplexity: tool.schema.number().positive().describe("Minimum essential complexity (same unit as current)"),
+    context: tool.schema.string().optional().describe("Additional context"),
   },
   async execute(args) {
-    const ratio = args.finishedCost / args.rawMaterialCost;
-    const roundedRatio = Math.round(ratio * 100) / 100;
-
-    const waste = args.finishedCost - args.rawMaterialCost;
-    const wastePercent = Math.round((waste / args.finishedCost) * 100);
+    const ratio = args.currentComplexity / args.essentialComplexity;
+    const rounded = Math.round(ratio * 100) / 100;
+    const excess = args.currentComplexity - args.essentialComplexity;
+    const excessPct = Math.round((excess / args.currentComplexity) * 100);
 
     let rating: string;
-    let verdict: string;
     let diagnosis: string;
-
-    if (ratio < 3) {
-      rating = "Excellent";
-      verdict = "✅ Low Idiot Index";
-      diagnosis = "Efficient design and manufacturing. The cost structure is close to raw material value. Focus on maintaining this discipline as you scale.";
-    } else if (ratio < 10) {
-      rating = "Fair";
-      verdict = "🔶 Moderate Idiot Index";
-      diagnosis = "There's meaningful waste in the process. Apply the algorithm: question requirements (Step 1), delete unnecessary steps (Step 2), simplify the design (Step 3). Each elimination directly reduces the index.";
-    } else if (ratio < 20) {
-      rating = "High";
-      verdict = "⚠️ High Idiot Index";
-      diagnosis = "You're adding significant cost through inefficient processes. Start from first principles: what is the theoretical minimum cost? What processes are adding cost without adding value? Consider vertical integration of expensive components.";
-    } else {
-      rating = "Idiotic";
-      verdict = "🚨 Idiotic Idiot Index";
-      diagnosis = "This is exactly what Elon warns about. The finished cost is completely detached from material value. Go back to Step 0 (first principles) and rebuild from the axiomatic base. Question every requirement. Ask: what would the platonic ideal of this part look like? What would it take to get the raw material cost as the asymptotic limit?";
-    }
+    if (ratio < 2) { rating = "Clean"; diagnosis = "Minimal technical debt. The complexity is close to essential complexity. Maintain this discipline."; }
+    else if (ratio < 5) { rating = "Moderate"; diagnosis = "Some technical debt accumulated. Apply the algorithm: question requirements, delete what's unnecessary, simplify what remains."; }
+    else if (ratio < 10) { rating = "High"; diagnosis = "Significant technical debt. This is slowing you down. Start from first principles: what is the essential complexity? What was added that shouldn't exist?"; }
+    else { rating = "Critical"; diagnosis = "Critical technical debt. The complexity has completely decoupled from essential complexity. Go back to Step 0 and rebuild from first principles. Delete first, simplify second, optimize never (until the debt is addressed)."; }
 
     const lines: string[] = [];
     lines.push(`╔════════════════════════════════════════════╗`);
-    lines.push(`║       IDIOT INDEX ANALYSIS                ║`);
+    lines.push(`║     TECHNICAL DEBT INDEX ANALYSIS         ║`);
     lines.push(`╚════════════════════════════════════════════╝`);
-    lines.push(``);
-    lines.push(`Part:            ${args.part}`);
-    lines.push(`Finished cost:   ${args.finishedCost}`);
-    lines.push(`Raw material:    ${args.rawMaterialCost}`);
-    if (args.context) lines.push(`Context:         ${args.context}`);
-    lines.push(``);
-    lines.push(`Idiot Index:     ${roundedRatio}`);
-    lines.push(`Rating:          ${rating} (${verdict})`);
-    lines.push(`Waste per unit:  ${waste} (${wastePercent}% of finished cost)`);
-    lines.push(``);
-    lines.push(`Diagnosis:`);
-    lines.push(`  ${diagnosis}`);
-    lines.push(``);
-
-    const annualVolumeValue = args.finishedCost * 100_000;
-    const rawValueAtScale = args.rawMaterialCost * 100_000;
-    const wasteAtScale = annualVolumeValue - rawValueAtScale;
-    lines.push(`Scale Check (100,000 units/year):`);
-    lines.push(`  Annual cost at scale: ${annualVolumeValue}`);
-    lines.push(`  Raw material at scale: ${rawValueAtScale}`);
-    lines.push(`  Annual waste at scale: ${wasteAtScale}`);
-    lines.push(`  → If this is still expensive at scale, volume is not the issue (per Elon).`);
-    lines.push(`     The problem is fundamental to the design or process.`);
-    lines.push(``);
-
-    lines.push(`Suggestions:`);
-    if (ratio >= 10) {
-      lines.push(`  - Apply first-principles: what is the theoretical minimum cost?`);
-      lines.push(`  - Question every manufacturing step: does it add value?`);
-      lines.push(`  - Consider vertical integration for high-cost components`);
-    }
-    if (ratio >= 3) {
-      lines.push(`  - Look at the 80/20: which single step adds the most waste?`);
-      lines.push(`  - Can the design be simplified to use fewer or cheaper materials?`);
-    }
-    lines.push(`  - Know this number. Track it. Make it a KPI.`);
-    lines.push(``);
-    lines.push(`"If the ratio is high, you're an idiot." — Elon Musk`);
-
-    return {
-      title: `Idiot Index: ${args.part} — ${roundedRatio}`,
-      output: lines.join("\n"),
-      metadata: {
-        idiotIndex: roundedRatio,
-        rating,
-        waste,
-        wastePercent,
-      },
-    };
+    lines.push(``, `Target:            ${args.target}`);
+    lines.push(`Current complexity: ${args.currentComplexity}`);
+    lines.push(`Essential:          ${args.essentialComplexity}`);
+    if (args.context) lines.push(`Context:           ${args.context}`);
+    lines.push(``, `Technical Debt Index: ${rounded}`);
+    lines.push(`Rating:            ${rating}`);
+    lines.push(`Excess complexity: ${excess} (${excessPct}% of total)`, ``);
+    lines.push(`Diagnosis: ${diagnosis}`, ``);
+    lines.push(`"Technical debt is the cost of complexity. Know your index at all times."`);
+    return { title: `Technical Debt Index: ${args.target} — ${rounded}`, output: lines.join("\n"), metadata: { debtIndex: rounded, rating, excess } };
   },
 });
-
-// ─── Helper Functions ────────────────────────────────────────────────────────
 
 function containsTriggerKeyword(text: string, keywords: string[]): string | null {
   for (const kw of keywords) {
@@ -706,491 +464,243 @@ const VERDICT_LABELS: Record<number, string[]> = {
   5: ["AUTOMATED", "PARTIAL", "NOT READY"],
 };
 
-function validateStepOutput(text: string, stepNum: number): StepValidationResult {
+function validateStepOutput(text: string, stepNum: number): { valid: boolean; verdict?: string; issues: string[]; suggestions: string[] } {
   const issues: string[] = [];
   const suggestions: string[] = [];
-
   const labels = VERDICT_LABELS[stepNum] ?? [];
   const verdictRegex = new RegExp(`(${labels.join("|").replace(/\s+/g, "\\s*")})`, "i");
   const verdictMatch = text.match(verdictRegex);
-
   let verdict: string | undefined;
   if (verdictMatch) {
     verdict = verdictMatch[1].toUpperCase();
   } else {
     issues.push(`No clear verdict found. Expected one of: ${labels.join(", ")}`);
   }
-
   const analysisLines = text.split("\n").filter(l => l.trim().startsWith("•") || l.trim().startsWith("-") || /^\d+\./.test(l.trim()));
-  if (analysisLines.length < 2) {
-    suggestions.push("Consider providing more detailed step-by-step analysis");
-  }
-
-  if (text.length > 4000) {
-    suggestions.push("Output is verbose — could key points be more concise?");
-  }
-
-  if (/\b(maybe|perhaps|we could|might|possibly|sort of|kind of)\b/i.test(text)) {
-    suggestions.push("Avoid hedging language — commit to a clear verdict");
-  }
-
-  if (/\b(add|create|introduce|implement)\s+(new|another|additional)\b/i.test(text)) {
-    suggestions.push("Adding new things during deletion contradicts Step 2 — verify additions are necessary");
-  }
-
-  return {
-    valid: issues.length === 0,
-    verdict,
-    issues,
-    suggestions,
-  };
+  if (analysisLines.length < 2) suggestions.push("Consider providing more detailed step-by-step analysis");
+  if (text.length > 4000) suggestions.push("Output is verbose — could key points be more concise?");
+  if (/\b(maybe|perhaps|we could|might|possibly|sort of|kind of)\b/i.test(text)) suggestions.push("Avoid hedging language — commit to a clear verdict");
+  return { valid: issues.length === 0, verdict, issues, suggestions };
 }
 
 function buildCompactionContext(state: SessionAlgoState): string {
   const parts: string[] = ["Elon Musk Algorithm state:"];
-  if (state.currentStep > 0) {
-    parts.push(`Current step: ${state.currentStep}/5 (${["Question", "Delete", "Simplify", "Accelerate", "Automate"][state.currentStep - 1]})`);
-  }
-  if (state.completedSteps.length > 0) {
-    parts.push(`Completed steps: ${state.completedSteps.join(" → ")}`);
-  }
+  if (state.currentStep > 0) parts.push(`Current step: ${state.currentStep}/5 (${["Question","Delete","Simplify","Accelerate","Automate"][state.currentStep - 1]})`);
+  if (state.completedSteps.length > 0) parts.push(`Completed steps: ${state.completedSteps.join(" → ")}`);
   parts.push(`Target: ${state.target}`);
-  if (Object.keys(state.verdicts).length > 0) {
-    const verdictStr = Object.entries(state.verdicts)
-      .map(([k, v]) => `Step ${k}: ${v}`)
-      .join(", ");
-    parts.push(`Verdicts: ${verdictStr}`);
-  }
+  if (Object.keys(state.verdicts).length > 0) parts.push(`Verdicts: ${Object.entries(state.verdicts).map(([k, v]) => `Step ${k}: ${v}`).join(", ")}`);
+  if (state.blockers.length > 0) parts.push(`Blocked by: ${state.blockers.map(b => b.subagent).join(", ")}`);
   return parts.join(". ");
 }
 
-interface SubagentFinding {
-  icon: string;
-  label: string;
-  passed: boolean;
-  detail: string;
-  suggestion: string | null;
-}
+// ─── LLM Subagent System ──────────────────────────────────────────────────
 
-interface SubagentInput {
-  text: string;
-  stepNum: number;
-  target: string;
-}
+const SUBAGENT_PROMPT_TEMPLATE = `You are a verification subagent for Elon Musk's engineering algorithm. Your job is to analyze step output and determine if the framework's principles were properly applied.
 
-type Subagent = {
-  name: string;
-  icon: string;
-  applicableSteps: number[];
-  analyze(input: SubagentInput): SubagentFinding;
-};
+Analyze the following step output against these engineering frameworks:
 
-const SUBAGENTS: Subagent[] = [
-  {
-    name: "First Principles",
-    icon: "🧠",
-    applicableSteps: [1, 2, 3, 4, 5],
-    analyze(input) {
-      const hasAxiomatic = /\b(axiomatic|fundamental|physics|immutable|first principles)\b/i.test(input.text);
-      const hasLimit = /\b(limit|asymptotic|scale|million|magic wand)\b/i.test(input.text);
-      if (hasAxiomatic && hasLimit) {
-        return { icon: "🧠", label: "First Principles", passed: true, detail: "Axiomatic base established and limit analysis performed.", suggestion: null };
-      }
-      if (!hasAxiomatic) {
-        return { icon: "🧠", label: "First Principles", passed: false, detail: "No axiomatic base found. Every analysis must start by stripping the problem to fundamental truths.", suggestion: "Establish the axiomatic base: what are you most confident is true at a foundational level?" };
-      }
-      return { icon: "🧠", label: "First Principles", passed: false, detail: "Limit analysis missing. You established principles but didn't push to the asymptotic limit.", suggestion: "Ask: what would this cost at 1M units? What's the magic wand number?" };
-    },
-  },
-  {
-    name: "The Best Part is No Part",
-    icon: "🗑️",
-    applicableSteps: [1, 2],
-    analyze(input) {
-      const hasDeletion = /\b(delete|remove|eliminate|cut|trim|drop)\b/i.test(input.text);
-      const hasJustification = /\b(necessary|need|required|essential|why|because|reason)\b/i.test(input.text);
-      if (!hasDeletion) {
-        return { icon: "🗑️", label: "The Best Part is No Part", passed: false, detail: "No consideration of deletion. The first question should always be 'does this need to exist?'", suggestion: "Before optimizing anything, ask: can we delete this entirely and still achieve the goal?" };
-      }
-      if (!hasJustification) {
-        return { icon: "🗑️", label: "The Best Part is No Part", passed: true, detail: "Deletion considered but justification for kept items is weak.", suggestion: "For everything you kept, explain WHY it must exist. If you can't, delete it." };
-      }
-      return { icon: "🗑️", label: "The Best Part is No Part", passed: true, detail: "Deletion analysis performed with clear justification for kept items.", suggestion: null };
-    },
-  },
-  {
-    name: "Find the Limit",
-    icon: "🎯",
-    applicableSteps: [2, 3],
-    analyze(input) {
-      const hasBoundary = /\b(limit|boundary|edge|thin|minimum|fewest|smallest|break|failure|how far|how thin|how few)\b/i.test(input.text);
-      const hasTest = /\b(test|try|try it|experiment|push|prototype|iterate)\b/i.test(input.text);
-      if (hasBoundary || hasTest) {
-        return { icon: "🎯", label: "Find the Limit", passed: true, detail: "Boundaries were explored and limits were tested.", suggestion: null };
-      }
-      return { icon: "🎯", label: "Find the Limit", passed: false, detail: "No evidence of boundary testing. You can't know the limit unless you push past it.", suggestion: "Ask: how thin can we make this? How few parts do we actually need? Push until it breaks." };
-    },
-  },
-  {
-    name: "Idiot Index",
-    icon: "💰",
-    applicableSteps: [1, 2, 3],
-    analyze(input) {
-      const hasCost = /\b(cost|price|expensive|cheap|dollar|waste|idiot index|raw material)\b/i.test(input.text);
-      if (hasCost) {
-        return { icon: "💰", label: "Idiot Index", passed: true, detail: "Cost structure was considered in the analysis.", suggestion: null };
-      }
-      return { icon: "💰", label: "Idiot Index", passed: false, detail: "No cost analysis performed. Every decision has a cost structure — question it.", suggestion: "Calculate the idiot index: finished cost / raw material cost. If ratio > 10, the design is wasteful." };
-    },
-  },
-  {
-    name: "Laws Can Be Changed",
-    icon: "⚖️",
-    applicableSteps: [1],
-    analyze(input) {
-      const hasConstraintQuestioning = /\b(requirement|spec|regulation|rule|policy|standard|always been|they said|department)\b/i.test(input.text);
-      const hasNamedAuthor = /\b(author|who|person|name|engineer|team lead|manager|elon)\b/i.test(input.text);
-      if (hasConstraintQuestioning && hasNamedAuthor) {
-        return { icon: "⚖️", label: "Laws Can Be Changed", passed: true, detail: "Requirements were traced to named authors and properly challenged.", suggestion: null };
-      }
-      if (!hasNamedAuthor) {
-        return { icon: "⚖️", label: "Laws Can Be Changed", passed: false, detail: "Requirements not traced to specific people. Anonymous requirements are dangerous.", suggestion: "Every requirement must have a NAMED author. 'The department' is not a person. Find the actual human who wrote it." };
-      }
-      return { icon: "⚖️", label: "Laws Can Be Changed", passed: true, detail: "Requirements were questioned.", suggestion: "Remember: this applies to legal/policy constraints too. Laws can be changed." };
-    },
-  },
-  {
-    name: "Manufacturing Pain",
-    icon: "🏭",
-    applicableSteps: [3, 5],
-    analyze(input) {
-      const hasMfg = /\b(manufactur|produc|build|assembly|factory|make|fabricat|construct|implement)\b/i.test(input.text);
-      const hasFeedback = /\b(feedback|test|iterate|real world|practical|feasible|possible)\b/i.test(input.text);
-      if (hasMfg && hasFeedback) {
-        return { icon: "🏭", label: "Manufacturing Pain", passed: true, detail: "Manufacturing feasibility and feedback loops were considered.", suggestion: null };
-      }
-      if (!hasMfg) {
-        return { icon: "🏭", label: "Manufacturing Pain", passed: false, detail: "No manufacturing or implementation reality check. Design without production awareness creates impossible products.", suggestion: "Colocate design with manufacturing. The people building it should be able to grab the designer and say 'why the f*** did you make it this way?'" };
-      }
-      return { icon: "🏭", label: "Manufacturing Pain", passed: true, detail: "Manufacturing considered but immediate feedback loops aren't evident.", suggestion: "Designers must see the assembly line. If your hand is on the stove you pull it off immediately." };
-    },
-  },
-  {
-    name: "Assume You're Losing",
-    icon: "⚠️",
-    applicableSteps: [1, 4],
-    analyze(input) {
-      const hasRisk = /\b(risk|fail|losing|worst case|wrong|mistake|probability|assume|pessimistic|conservative)\b/i.test(input.text);
-      if (hasRisk) {
-        return { icon: "⚠️", label: "Assume You're Losing", passed: true, detail: "Risks and failure modes were honestly assessed.", suggestion: null };
-      }
-      return { icon: "⚠️", label: "Assume You're Losing", passed: false, detail: "No risk assessment found. Wishful thinking is natural — you must deliberately counter it.", suggestion: "Assume you're losing even when it looks like you might win. What would you do differently if you knew your current approach would fail?" };
-    },
-  },
-  {
-    name: "Time is Currency",
-    icon: "⏱️",
-    applicableSteps: [4],
-    analyze(input) {
-      const hasTime = /\b(time|slow|fast|speed|delay|bottleneck|cycle|iteration|velocity|acceleration)\b/i.test(input.text);
-      if (hasTime) {
-        return { icon: "⏱️", label: "Time is Currency", passed: true, detail: "Cycle time and velocity were addressed.", suggestion: null };
-      }
-      return { icon: "⏱️", label: "Time is Currency", passed: false, detail: "No time analysis. Speed is your only non-renewable resource.", suggestion: "What's the bottleneck? How long does one cycle take? The only true currency is time — it's okay to scrap money, not time." };
-    },
-  },
-  {
-    name: "Fewer Things",
-    icon: "📦",
-    applicableSteps: [2, 3],
-    analyze(input) {
-      const hasSimplify = /\b(simplif|reduce|fewer|less|minimal|compact|lean|trim|complexity)\b/i.test(input.text);
-      if (hasSimplify) {
-        return { icon: "📦", label: "Fewer Things", passed: true, detail: "Complexity reduction was addressed.", suggestion: null };
-      }
-      return { icon: "📦", label: "Fewer Things", passed: false, detail: "No simplification analysis. Complexity kills reliability.", suggestion: "You want fewer things, not more. Simplicity comes from hundreds of little eliminations. Genius has the fewest moving parts." };
-    },
-  },
-  {
-    name: "Take Ideas from Other Industries",
-    icon: "🔗",
-    applicableSteps: [1, 2, 3],
-    analyze(input) {
-      const hasAnalogy = /\b(analog|like|similar to|inspired|like how|just as|compared to|other industry|different domain|non.?traditional)\b/i.test(input.text);
-      if (hasAnalogy) {
-        return { icon: "🔗", label: "Cross-Industry Ideas", passed: true, detail: "External analogies and cross-domain thinking were applied.", suggestion: null };
-      }
-      return { icon: "🔗", label: "Cross-Industry Ideas", passed: false, detail: "No cross-industry analogies found. This limits your solution to conventional thinking.", suggestion: "What is simple in one arena is often profound in another. How does the toy industry solve this? How about military aviation? Nature?" };
-    },
-  },
-  {
-    name: "Don't Be Confident and Wrong",
-    icon: "🎲",
-    applicableSteps: [1, 2, 3, 4, 5],
-    analyze(input) {
-      const hasCertainty = /\b(definitely|absolutely|certainly|guaranteed|without question|no doubt|100%|always|never)\b/i.test(input.text);
-      const hasHedge = /\b(maybe|perhaps|might|possibly|could be|i think|probably|likely|not sure)\b/i.test(input.text);
-      if (hasCertainty && !hasHedge) {
-        return { icon: "🎲", label: "Confidence Check", passed: false, detail: "Overconfident language detected without hedging. Being wrong is fine — being confidently wrong is not.", suggestion: "Cross-check your conclusion against your axiomatic base. What if you're wrong? What would that mean?" };
-      }
-      return { icon: "🎲", label: "Confidence Check", passed: true, detail: "Appropriate level of certainty in conclusions.", suggestion: null };
-    },
-  },
-  {
-    name: "What Would It Take",
-    icon: "🔑",
-    applicableSteps: [1],
-    analyze(input) {
-      const hasReframe = /\b(what would it take|impossible|can.t|cannot|never been done|no one has|breakthrough)\b/i.test(input.text);
-      if (hasReframe) {
-        return { icon: "🔑", label: "What Would It Take", passed: true, detail: "Impossibility was reframed as a solvable problem.", suggestion: null };
-      }
-      return { icon: "🔑", label: "What Would It Take", passed: false, detail: "No evidence of reframing constraints. When told something is impossible, ask 'What WOULD it take?'", suggestion: "Instead of 'can we do this?', ask 'what would it take?' This shifts from defensive skepticism to constructive problem-solving." };
-    },
-  },
-  {
-    name: "Reality is Validation",
-    icon: "🧪",
-    applicableSteps: [3, 4],
-    analyze(input) {
-      const hasIteration = /\b(iterat|prototype|experiment|test|try|build|launch|ship|deploy|mvp|v1|version 1)\b/i.test(input.text);
-      if (hasIteration) {
-        return { icon: "🧪", label: "Reality is Validation", passed: true, detail: "Iteration and prototyping approach is embedded in the plan.", suggestion: null };
-      }
-      return { icon: "🧪", label: "Reality is Validation", passed: false, detail: "No iteration cycle defined. You don't know until you test.", suggestion: "Build a crude prototype as fast as possible. Use reality to validate. Maximize iterations per unit time." };
-    },
-  },
-  {
-    name: "Start With What's Available",
-    icon: "⚡",
-    applicableSteps: [2, 3, 4],
-    analyze(input) {
-      const hasPractical = /\b(available|existing|already have|right now|today|current|use what|immediate|quick)\b/i.test(input.text);
-      if (hasPractical) {
-        return { icon: "⚡", label: "Start With What's Available", passed: true, detail: "Practical, immediate-resource thinking was applied.", suggestion: null };
-      }
-      return { icon: "⚡", label: "Start With What's Available", passed: false, detail: "No evidence of 'start with what's available' thinking.", suggestion: "Resist the urge to over-complicate. What do you have right now? Start with that. A dome by dawn using a sliced barrel beats a perfect dome next week." };
-    },
-  },
-];
+1. **First Principles**: Was the problem stripped to its axiomatic base? Were limits analyzed? Were physics constraints checked?
+2. **The 10% Rule**: Was deletion aggressive enough? Would adding back 10% of deleted items be expected?
+3. **Fewer Things**: Was complexity actively reduced? Could anything be simplified further?
+4. **Technical Debt Index**: Was the cost of complexity considered? Was unnecessary overhead identified?
+5. **Maniacal Urgency**: Was there a bias toward action? Was speed valued over perfection?
+6. **Walk to the Red**: Did the analysis go directly to the source of the problem?
+7. **Bad News Loudly**: Were risks and failure modes honestly surfaced?
+8. **20% Error Tolerance**: Did the output acknowledge uncertainty and avoid false confidence?
 
-function runSubagents(text: string, stepNum: number, target: string): SubagentFinding[] {
-  const input: SubagentInput = { text, stepNum, target };
-  const findings: SubagentFinding[] = [];
-  const stepSpecific = SUBAGENTS.filter(s => s.applicableSteps.includes(stepNum));
-  for (const agent of stepSpecific) {
-    findings.push(agent.analyze(input));
+For EACH framework, respond with a JSON object containing:
+- "subagent": the framework name
+- "passed": true/false
+- "severity": "info" | "warning" | "critical"
+- "reasoning": brief explanation of your assessment
+- "suggestion": specific suggestion if not passed, or null if passed
+
+Return ONLY a JSON array of 8 objects, inside a \`\`\`json code block. No other text.
+
+Step number: {STEP}
+Target: {TARGET}
+
+Step output to analyze:
+{OUTPUT}`;
+
+function parseSubagentFindings(text: string): LLMSubagentFinding[] {
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].subagent) return parsed as LLMSubagentFinding[];
+  } catch {}
+
+  const jsonMatch = text.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      if (Array.isArray(parsed)) return parsed as LLMSubagentFinding[];
+    } catch {}
   }
-  return findings;
+
+  const bracketMatch = text.match(/\[[\s\S]*?\{[\s\S]*?"subagent"[\s\S]*?\}\]/);
+  if (bracketMatch) {
+    try {
+      const parsed = JSON.parse(bracketMatch[0]);
+      if (Array.isArray(parsed)) return parsed as LLMSubagentFinding[];
+    } catch {}
+  }
+
+  const fallback: LLMSubagentFinding[] = [
+    { subagent: "First Principles", passed: /\b(axiomatic|fundamental|physics|first principles)\b/i.test(text), severity: "warning", reasoning: "Fallback analysis — LLM subagent unavailable.", suggestion: null },
+    { subagent: "Maniacal Urgency", passed: /\b(speed|fast|now|immediate|urgency|accelerate)\b/i.test(text), severity: "info", reasoning: "Fallback analysis.", suggestion: null },
+    { subagent: "Fewer Things", passed: /\b(simplif|reduce|fewer|delete|remove|trim|eliminate)\b/i.test(text), severity: "info", reasoning: "Fallback analysis.", suggestion: null },
+  ];
+  for (const name of ["The 10% Rule", "Technical Debt Index", "Walk to the Red", "Bad News Loudly", "20% Error Tolerance"]) {
+    fallback.push({ subagent: name, passed: true, severity: "info", reasoning: "Fallback — could not analyze.", suggestion: null });
+  }
+  return fallback;
 }
 
-function formatSubagentReview(findings: SubagentFinding[]): string[] {
-  const lines: string[] = [];
-  lines.push(``);
-  lines.push(`## 🔬 Subagent Reviews`);
+function buildSubagentPrompt(stepOutput: string, stepNum: number, target: string): string {
+  return SUBAGENT_PROMPT_TEMPLATE
+    .replace("{STEP}", String(stepNum))
+    .replace("{TARGET}", target)
+    .replace("{OUTPUT}", stepOutput);
+}
 
-  const passed = findings.filter(f => f.passed);
-  const failed = findings.filter(f => !f.passed);
+// ─── Analysis Session Management ──────────────────────────────────────────
 
-  for (const f of [...failed, ...passed]) {
-    lines.push(``);
-    lines.push(`### ${f.icon} ${f.label} Subagent`);
-    lines.push(`${f.passed ? "✅ **PASSED**" : "❌ **FLAGGED**"} — ${f.detail}`);
-    if (f.suggestion) {
-      lines.push(`> 💡 **Suggestion:** ${f.suggestion}`);
+async function createAnalysisSession(client: any, parentSessionId: string): Promise<string | null> {
+  try {
+    const created = await client.session.create({ parentID: parentSessionId });
+    return created?.info?.id ?? null;
+  } catch (err) {
+    console.warn("[elon-algorithm] Failed to create analysis session:", err);
+    return null;
+  }
+}
+
+async function deleteAnalysisSession(client: any, sessionId: string): Promise<void> {
+  try {
+    await client.session.delete({ sessionID: sessionId });
+  } catch (err) {
+    console.warn("[elon-algorithm] Failed to delete analysis session:", err);
+  }
+}
+
+async function runLLMSubagents(
+  client: any, text: string, stepNum: number, target: string,
+): Promise<{ findings: LLMSubagentFinding[]; hadFailure: boolean }> {
+  const analysisSessionId = await createAnalysisSession(client, "analysis-placeholder");
+  if (!analysisSessionId) {
+    return { findings: parseSubagentFindings(""), hadFailure: true };
+  }
+
+  try {
+    const prompt = buildSubagentPrompt(text, stepNum, target);
+    const result = await client.session.prompt({ body: { parts: [{ type: "text", text: prompt }] }, path: { sessionID: analysisSessionId } });
+    const responseText = result?.parts?.map((p: Part) => (p as TextPart).text).filter(Boolean).join("\n") ?? "";
+    const findings = parseSubagentFindings(responseText);
+    await deleteAnalysisSession(client, analysisSessionId);
+    return { findings, hadFailure: false };
+  } catch (err) {
+    console.warn("[elon-algorithm] LLM subagent analysis failed:", err);
+    await deleteAnalysisSession(client, analysisSessionId).catch(() => {});
+    return { findings: parseSubagentFindings(""), hadFailure: true };
+  }
+}
+
+async function runLLMCodeReview(client: any, code: string, filename: string | undefined): Promise<string | null> {
+  const fileInfo = filename ? `File: ${filename}\n\n` : "";
+  const prompt = `Review this code for simplification opportunities using Elon Musk's engineering principles:
+
+${fileInfo}\`\`\`
+${code.slice(0, 4000)}
+\`\`\`
+
+Analyze for:
+1. **Unnecessary complexity**: Is there code that doesn't need to exist?
+2. **Over-abstraction**: Are there unnecessary wrappers, interfaces, or patterns?
+3. **Fragile patterns**: Deep nesting, tight coupling, mutation sprawl
+4. **Technical debt**: TODO markers, workarounds, known-broken code
+5. **Delete opportunities**: What could be removed entirely without changing behavior?
+
+Return your analysis as a JSON object with this structure:
+{ "findings": [{ "severity": "critical"|"warning"|"info", "category": "string", "detail": "string", "suggestion": "string" }] }
+Wrap in \`\`\`json code block.`;
+
+  const analysisSessionId = await createAnalysisSession(client, "code-review-placeholder");
+  if (!analysisSessionId) return null;
+
+  try {
+    const result = await client.session.prompt({ body: { parts: [{ type: "text", text: prompt }] }, path: { sessionID: analysisSessionId } });
+    const responseText = result?.parts?.map((p: Part) => (p as TextPart).text).filter(Boolean).join("\n") ?? "";
+    await deleteAnalysisSession(client, analysisSessionId);
+    const jsonBlock = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+    if (jsonBlock) {
+      const parsed = JSON.parse(jsonBlock[1]);
+      if (parsed?.findings?.length > 0) {
+        const lines: string[] = [];
+        lines.push(``, `---`, `### 🔬 LLM Code Simplification Review`);
+        for (const f of parsed.findings) {
+          const icon = f.severity === "critical" ? "🔴" : f.severity === "warning" ? "🟡" : "🔵";
+          lines.push(`\n${icon} **${f.category}:** ${f.detail}`);
+          if (f.suggestion) lines.push(`  → ${f.suggestion}`);
+        }
+        return lines.join("\n");
+      }
     }
+    return null;
+  } catch (err) {
+    console.warn("[elon-algorithm] LLM code review failed:", err);
+    await deleteAnalysisSession(client, analysisSessionId).catch(() => {});
+    return null;
   }
-
-  if (failed.length > 0) {
-    lines.push(``);
-    lines.push(`**⚠️ ${failed.length} subagent(s) flagged issues.** Address them before fully committing to this step's conclusion.`);
-  } else {
-    lines.push(``);
-    lines.push(`**✅ All subagent checks passed.** Clean verification.`);
-  }
-
-  return lines;
 }
 
-// ─── Code Simplification Analyzer ────────────────────────────────────────────
-
-interface SimplifyFinding {
-  severity: "info" | "warning" | "critical";
-  icon: string;
-  category: string;
-  detail: string;
-  lineRef?: number;
-}
+// ─── Heuristic Code Simplification Analyzer ───────────────────────────────
 
 const IMPLEMENT_TOOLS = new Set(["write", "edit", "refactor"]);
 
-function analyzeCodeForSimplification(code: string, filename?: string): SimplifyFinding[] {
+function analyzeCodeForSimplification(code: string): SimplifyFinding[] {
   const findings: SimplifyFinding[] = [];
   const lines = code.split("\n");
   const totalLines = lines.length;
 
-  if (totalLines > 200) {
-    findings.push({
-      severity: "warning",
-      icon: "📏",
-      category: "File Length",
-      detail: `File is ${totalLines} lines. Long files hide complexity. Could this be split or simplified?`,
-    });
-  }
-
+  if (totalLines > 200) findings.push({ severity: "warning", icon: "📏", category: "File Length", detail: `File is ${totalLines} lines. Long files hide complexity.` });
   let maxIndent = 0;
-  for (const line of lines) {
-    const indent = line.search(/\S/);
-    if (indent > maxIndent) maxIndent = indent;
-  }
-  if (maxIndent > 24) {
-    findings.push({
-      severity: "critical",
-      icon: "🪺",
-      category: "Nesting Depth",
-      detail: `Code indentation reaches depth ${maxIndent / 2} levels. Deeply nested code is fragile and hard to follow. Extract early returns or helper functions.`,
-    });
-  } else if (maxIndent > 16) {
-    findings.push({
-      severity: "warning",
-      icon: "🪺",
-      category: "Nesting Depth",
-      detail: `Code indentation reaches depth ${maxIndent / 2} levels. Consider reducing nesting with guard clauses or extracting functions.`,
-    });
-  }
-
-  const conditionalCount = (code.match(/\bif\s*\(/g) || []).length +
-    (code.match(/\belse\s+if\b/g) || []).length +
-    (code.match(/\bswitch\s*\(/g) || []).length +
-    (code.match(/\?\s*\w+\s*:/g) || []).length;
-  const conditionalRatio = totalLines > 0 ? conditionalCount / totalLines : 0;
-  if (conditionalRatio > 0.2) {
-    findings.push({
-      severity: "warning",
-      icon: "🔀",
-      category: "Conditionals",
-      detail: `${conditionalCount} conditionals in ${totalLines} lines (${Math.round(conditionalRatio * 100)}%). Over 20% conditional density means fragile logic. Can any be eliminated?`,
-    });
-  }
-
-  const oneLineWrapperCount = (code.match(/return\s+\w+\([\s\S]*?\)\s*;/g) || []).length +
-    (code.match(/^\s*\w+\s*=\s*\w+\.\w+\([\s\S]*?\)\s*$/gm) || []).length;
-  if (oneLineWrapperCount > 5) {
-    findings.push({
-      severity: "info",
-      icon: "🔄",
-      category: "Indirection",
-      detail: `${oneLineWrapperCount} one-line wrappers detected. Each wrapper adds fragility without value. Can they be inlined?`,
-    });
-  }
-
-  const funcMatches = code.matchAll(/(?:function\s+\w+|=>\s*{|\)\s*:\s*\w+\s*=>|\w+\s*\([^)]*\)\s*\{)/g);
-  const funcCount = [...funcMatches].length;
-  if (totalLines > 50 && funcCount === 0) {
-    findings.push({
-      severity: "warning",
-      icon: "📋",
-      category: "Function Decomposition",
-      detail: `No functions detected in ${totalLines} lines. Monolithic code is impossible to simplify piece by piece. Break it down.`,
-    });
-  }
-  if (funcCount > 20 && totalLines < 300) {
-    findings.push({
-      severity: "info",
-      icon: "📋",
-      category: "Function Count",
-      detail: `${funcCount} functions in ${totalLines} lines. High function density may indicate over-abstraction. Could some be merged?`,
-    });
-  }
-
-  const complexityPatterns = [
-    { pattern: /\b(abstract|interface|generic|overrid|polymorph|factory|singleton|decorator|observer|strategy)\b/gi, label: "Design Patterns" },
-    { pattern: /\b(as\s+any|@ts-ignore|@ts-expect-error|any\s*\()/g, label: "Type Escapes" },
-    { pattern: /\b(forEach|map|filter|reduce)\s*\([^)]*\)\s*\.\s*(forEach|map|filter|reduce)/g, label: "Chain Length" },
-    { pattern: /\btry\s*\{[^}]*\}\s*catch\s*\(\w*\)\s*\{\s*\}/g, label: "Empty Catch" },
-    { pattern: /\bTODO|FIXME|HACK|XXX|WORKAROUND|TEMPORARY|HARDCODED\b/gi, label: "Technical Debt" },
-  ];
-
-  for (const { pattern, label } of complexityPatterns) {
-    const matches = code.match(pattern);
-    if (matches && matches.length > 2) {
-      findings.push({
-        severity: "warning",
-        icon: "🏗️",
-        category: label,
-        detail: `${matches.length} instances of ${label.toLowerCase()} found. Each adds fragility. Question whether each one is necessary.`,
-      });
-    } else if (matches && matches.length > 0) {
-      findings.push({
-        severity: "info",
-        icon: "🏗️",
-        category: label,
-        detail: `${matches.length} instance(s) of ${label.toLowerCase()}. Worth reviewing.`,
-      });
-    }
-  }
-
-  const commentExplanations = (code.match(/\/\/\s*(complex|tricky|hack|ugly|mess|confusing|careful|don't touch|magic|workaround)/gi) || []).length;
-  if (commentExplanations > 0) {
-    findings.push({
-      severity: "warning",
-      icon: "💬",
-      category: "Self-Identified Complexity",
-      detail: `${commentExplanations} comments admit complexity. If the author knew it was complex, it should have been simplified before shipping.`,
-    });
-  }
-
+  for (const line of lines) { const indent = line.search(/\S/); if (indent > maxIndent) maxIndent = indent; }
+  if (maxIndent > 24) findings.push({ severity: "critical", icon: "🪺", category: "Nesting Depth", detail: `Code reaches depth ${maxIndent / 2} levels. Deeply nested code is fragile.` });
+  else if (maxIndent > 16) findings.push({ severity: "warning", icon: "🪺", category: "Nesting Depth", detail: `Code reaches depth ${maxIndent / 2} levels. Consider reducing nesting.` });
+  const conditionalCount = (code.match(/\bif\s*\(/g) || []).length + (code.match(/\belse\s+if\b/g) || []).length + (code.match(/\bswitch\s*\(/g) || []).length;
+  if (totalLines > 0 && conditionalCount / totalLines > 0.2) findings.push({ severity: "warning", icon: "🔀", category: "Conditionals", detail: `${conditionalCount} conditionals in ${totalLines} lines (${Math.round(conditionalCount / totalLines * 100)}%). Fragile logic.` });
+  const wrapperCount = (code.match(/return\s+\w+\(/g) || []).length;
+  if (wrapperCount > 5) findings.push({ severity: "info", icon: "🔄", category: "Indirection", detail: `${wrapperCount} one-line wrappers. Each adds fragility without value.` });
+  const typeEscapes = (code.match(/\bas\s+any\b|@ts-ignore|@ts-expect-error/g) || []).length;
+  if (typeEscapes > 0) findings.push({ severity: "warning", icon: "🏗️", category: "Type Escapes", detail: `${typeEscapes} type safety violations. Each is a debt that WILL compound.` });
+  const emptyCatches = (code.match(/catch\s*\([\w\s]+\)\s*\{\s*\}/g) || []).length;
+  if (emptyCatches > 0) findings.push({ severity: "critical", icon: "🕳️", category: "Empty Catches", detail: `${emptyCatches} empty catch blocks. Silent failures are the worst kind of debt.` });
+  const debtMarkers = (code.match(/\bTODO|FIXME|HACK|XXX|WORKAROUND\b/gi) || []).length;
+  if (debtMarkers > 5) findings.push({ severity: "warning", icon: "📋", category: "Technical Debt", detail: `${debtMarkers} debt markers. Each one is a promise to fix later that won't be kept.` });
+  else if (debtMarkers > 0) findings.push({ severity: "info", icon: "📋", category: "Technical Debt", detail: `${debtMarkers} debt marker(s).` });
   return findings;
 }
 
-function simplifyCodeToOutput(code: string, filename: string | undefined): string | null {
-  const findings = analyzeCodeForSimplification(code, filename);
-  if (findings.length === 0) return null;
-
+function findingsToOutput(findings: SimplifyFinding[], llmReview: string | null): string {
+  if (findings.length === 0 && !llmReview) return "";
   const lines: string[] = [];
-  lines.push(``);
-  lines.push(`---`);
-  lines.push(`### 🔬 Code Simplification Subagent Review`);
-  lines.push(``);
-  lines.push(`> *Elon's approach: find what's fragile, delete what's unnecessary, simplify what remains.*`);
-  lines.push(``);
-
-  const critical = findings.filter(f => f.severity === "critical");
-  const warnings = findings.filter(f => f.severity === "warning");
-  const infos = findings.filter(f => f.severity === "info");
-
-  if (critical.length > 0) {
-    lines.push(`**🔴 Critical Issues:**`);
-    for (const f of critical) {
-      lines.push(`- ${f.icon} **${f.category}:** ${f.detail}`);
-      lines.push(`  → This needs to be fixed. Fragile code WILL break.`);
+  lines.push(``, `---`, `### 🔬 Code Simplification Subagent Review`);
+  if (findings.length > 0) {
+    for (const f of findings) {
+      const icon = f.severity === "critical" ? "🔴" : f.severity === "warning" ? "🟡" : "🔵";
+      lines.push(`\n${icon} **${f.category}:** ${f.detail}`);
     }
-    lines.push(``);
   }
-
-  if (warnings.length > 0) {
-    lines.push(`**🟡 Simplification Opportunities:**`);
-    for (const f of warnings) {
-      lines.push(`- ${f.icon} **${f.category}:** ${f.detail}`);
-    }
-    lines.push(``);
+  if (llmReview) lines.push(llmReview);
+  if (findings.some(f => f.severity === "critical")) {
+    lines.push(`\n**🔴 Critical issues found.** Address these before considering this implementation complete.`, `"We are on a deletion rampage. Nothing is sacred." — Elon Musk`);
+  } else if (findings.length > 0) {
+    lines.push(`\n**${findings.length} simplification opportunities identified.** Review and apply the algorithm.`);
   }
-
-  if (infos.length > 0) {
-    lines.push(`**🔵 Review Notes:**`);
-    for (const f of infos) {
-      lines.push(`- ${f.icon} **${f.category}:** ${f.detail}`);
-    }
-    lines.push(``);
-  }
-
-  lines.push(`**Next step:** Run \`elon-delete\` on this implementation. Question every function. Delete what you can. Simplify what remains.`);
-  lines.push(`"We are on a deletion rampage. Nothing is sacred." — Elon Musk`);
-
   return lines.join("\n");
 }
 
-const ALGO_TOOLS = new Set(["elon-question", "elon-delete", "elon-simplify", "elon-accelerate", "elon-automate", "elon-apply", "elon-idiot-index"]);
+const ALGO_TOOLS = new Set(["elon-question", "elon-delete", "elon-simplify", "elon-accelerate", "elon-automate", "elon-apply", "elon-debt-index"]);
 const AMBIENT_TOOLS = new Set(["bash", "write", "edit", "refactor", "move", "copy", "delete", "rename"]);
 
 const STEP_AMBINT_HINTS: Record<number, string> = {
@@ -1220,27 +730,19 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
       "elon-accelerate": elonAccelerate,
       "elon-automate": elonAutomate,
       "elon-apply": elonApply,
-      "elon-idiot-index": elonIdiotIndex,
+      "elon-debt-index": elonDebtIndex,
     },
 
-    config: async (_input: Config) => {
-      reloadConfig();
-    },
+    config: async (_input: Config) => { reloadConfig(); },
 
     "experimental.chat.system.transform": async (_input, output) => {
       if (_input.sessionID) {
         const state = sessions.get(_input.sessionID);
         if (state && state.currentStep > 0) {
-          if (currentConfig.mode === "full") {
-            output.system.push(SYSTEM_PROMPT_FULL);
-          } else if (currentConfig.mode === "gentle") {
-            output.system.push(SYSTEM_PROMPT_GENTLE);
-          } else {
-            output.system.push(SYSTEM_PROMPT_STEPS_ONLY);
-          }
+          output.system.push(FIRST_PRINCIPLES_PROMPT);
+          output.system.push(currentConfig.mode === "full" ? SYSTEM_PROMPT_FULL : currentConfig.mode === "gentle" ? SYSTEM_PROMPT_GENTLE : SYSTEM_PROMPT_STEPS_ONLY);
           return;
         }
-
         const lastMsg = lastUserMessages.get(_input.sessionID) ?? "";
         if (lastMsg && containsTriggerKeyword(lastMsg, currentConfig.keywords)) {
           output.system.push(SYSTEM_PROMPT_STEPS_ONLY);
@@ -1249,25 +751,14 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
     },
 
     "chat.message": async (input, output) => {
-      const userText = output.parts
-        .filter((p): p is TextPart => p.type === "text")
-        .map((p) => p.text)
-        .join(" ");
-
+      const userText = output.parts.filter((p): p is TextPart => p.type === "text").map((p) => p.text).join(" ");
       lastUserMessages.set(input.sessionID, userText);
-
       const match = containsTriggerKeyword(userText, currentConfig.keywords);
       if (match) {
         const part: TextPart = {
-          id: randomUUID(),
-          sessionID: input.sessionID,
-          messageID: input.messageID ?? randomUUID(),
+          id: randomUUID(), sessionID: input.sessionID, messageID: input.messageID ?? randomUUID(),
           type: "text",
-          text: [
-            ``,
-            `> 💡 **Tip:** You mentioned "*${match}*" — consider running \`/elon-algorithm\``,
-            `> to apply Elon Musk's 5-step engineering algorithm.`,
-          ].join("\n"),
+          text: `\n> 💡 **Tip:** You mentioned "*${match}*" — consider running \`/elon-algorithm\` to apply Elon Musk's 5-step engineering algorithm.`,
         };
         output.parts.push(part);
       }
@@ -1276,47 +767,37 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
     "chat.params": async (input, output) => {
       const state = sessions.get(input.sessionID);
       if (!state || state.currentStep === 0) return;
-
       switch (state.currentStep) {
-        case 1:
-          output.temperature = 0.3;
-          output.topP = 0.7;
-          break;
-        case 2:
-          output.temperature = 0.5;
-          output.topP = 0.9;
-          break;
-        case 3:
-          output.temperature = 0.3;
-          output.topP = 0.6;
-          break;
-        case 4:
-          output.temperature = 0.5;
-          output.topP = 0.8;
-          break;
-        case 5:
-          output.temperature = 0.3;
-          output.topP = 0.7;
-          break;
+        case 1: output.temperature = 0.3; output.topP = 0.7; break;
+        case 2: output.temperature = 0.5; output.topP = 0.9; break;
+        case 3: output.temperature = 0.3; output.topP = 0.6; break;
+        case 4: output.temperature = 0.5; output.topP = 0.8; break;
+        case 5: output.temperature = 0.3; output.topP = 0.7; break;
       }
+    },
+
+    "permission.ask": async (input, output) => {
+      const toolName = (input as any).tool ?? (input as any).toolID ?? "";
+      if (ALGO_TOOLS.has(toolName)) return;
+      const sessionID = (input as any).sessionID ?? "";
+      if (!sessionID) return;
+      const state = sessions.get(sessionID);
+      if (!state || state.blockers.length === 0) return;
+
+      output.status = "deny";
+      const blockerReasons = state.blockers.map(b => `🔴 ${b.subagent}: ${b.reason}`).join("\n");
+      console.warn(`[elon-algorithm] Blocked tool ${toolName} due to blockers:\n${blockerReasons}`);
     },
 
     "tool.execute.before": async (input, output) => {
       const toolName = input.tool.toLowerCase();
       const state = sessions.get(input.sessionID);
-
       if (state && state.currentStep > 0 && AMBIENT_TOOLS.has(toolName) && output.args) {
         if (toolName === "bash" && typeof output.args.command === "string") {
           const hint = STEP_AMBINT_HINTS[state.currentStep];
-          if (hint) {
-            output.args = {
-              ...output.args,
-              command: `${output.args.command}\n# 💡 [Algorithm: ${hint}]`,
-            };
-          }
+          if (hint) output.args = { ...output.args, command: `${output.args.command}\n# 💡 [Algorithm: ${hint}]` };
         }
       }
-
       if (state && state.currentStep > 0) {
         state.context.push(`[${new Date().toISOString()}] Tool ${toolName} invoked during Step ${state.currentStep}`);
       }
@@ -1325,14 +806,20 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
     "tool.execute.after": async (input, output) => {
       const toolName = input.tool.toLowerCase();
       if (!IMPLEMENT_TOOLS.has(toolName)) return;
-
       const code = input.args?.content ?? input.args?.newString ?? null;
       if (!code || typeof code !== "string" || code.length < 50) return;
 
-      const filename = input.args?.filePath ?? input.args?.file ?? undefined;
-      const simplification = simplifyCodeToOutput(code, filename);
-      if (simplification) {
-        output.output = (output.output ?? "") + simplification;
+      const heuristicFindings = analyzeCodeForSimplification(code);
+      let llmReview: string | null = null;
+
+      if (code.length > 5000) {
+        const filename = input.args?.filePath ?? input.args?.file ?? undefined;
+        llmReview = await runLLMCodeReview(client, code, filename);
+      }
+
+      const outputText = findingsToOutput(heuristicFindings, llmReview);
+      if (outputText) {
+        output.output = (output.output ?? "") + outputText;
       }
     },
 
@@ -1342,7 +829,6 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
 
       const step = parseInt(tagMatch[1], 10);
       const textBefore = output.text.replace(tagMatch[0], "").trim();
-
       const validation = validateStepOutput(textBefore, step);
       const state = sessions.get(input.sessionID);
 
@@ -1350,30 +836,52 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
         const hasMore = advanceStep(state);
         state.verdicts[step] = validation.verdict ?? "completed";
 
-        const subagentFindings = runSubagents(textBefore, step, state.target);
-        const subagentOutput = formatSubagentReview(subagentFindings);
+        const { findings: subagentFindings, hadFailure } = await runLLMSubagents(client, textBefore, step, state.target);
 
-        const verificationLines: string[] = [];
-        verificationLines.push(``);
-        verificationLines.push(`---`);
-        verificationLines.push(`### ✅ Step ${step} Passed — Subagent Review`);
-        verificationLines.push(``);
-
-        verificationLines.push(...subagentOutput);
-
-        const failedSubagents = subagentFindings.filter(f => !f.passed);
-        if (failedSubagents.length > 0) {
-          verificationLines.push(``);
-          verificationLines.push(`> 🔴 **${failedSubagents.length} framework(s) flagged issues.** Review the flagged items above before proceeding with full confidence.`);
+        const criticalFailures = subagentFindings.filter(f => !f.passed && f.severity === "critical");
+        if (criticalFailures.length > 0) {
+          state.blockers.push(...criticalFailures.map(f => ({
+            subagent: f.subagent, reason: f.reasoning, step,
+          })));
         }
 
-        if (hasMore) {
+        const verificationLines: string[] = [];
+        verificationLines.push(``, `---`);
+        verificationLines.push(`### 🔬 Subagent Review — Step ${step}`);
+
+        if (hadFailure) {
+          verificationLines.push(`\n> ⚠️ LLM subagent analysis unavailable. Using heuristic fallback.`);
+        }
+
+        const failed = subagentFindings.filter(f => !f.passed);
+        const passed = subagentFindings.filter(f => f.passed);
+
+        if (failed.length > 0) {
+          verificationLines.push(`\n**❌ Failed checks:**`);
+          for (const f of failed) {
+            const icon = f.severity === "critical" ? "🔴" : f.severity === "warning" ? "🟡" : "🔵";
+            verificationLines.push(`\n${icon} **${f.subagent}:** ${f.reasoning}`);
+            if (f.suggestion) verificationLines.push(`  → ${f.suggestion}`);
+          }
+        }
+
+        if (passed.length > 0) {
+          verificationLines.push(`\n**✅ Passed checks:**`);
+          for (const f of passed) {
+            verificationLines.push(`- **${f.subagent}:** ${f.reasoning}`);
+          }
+        }
+
+        if (criticalFailures.length > 0) {
+          verificationLines.push(``);
+          verificationLines.push(`> 🚫 **${criticalFailures.length} critical issue(s) BLOCKING progress.** Address them above, then run \`/elon-clear-blockers\` after fixing.`);
+          state.currentStep = state.currentStep - 1;
+          state.completedSteps.pop();
+        } else if (hasMore) {
           const nextName = STEP_NAMES[state.currentStep - 1] ?? "complete";
-          verificationLines.push(``);
-          verificationLines.push(`**Proceed to Step ${state.currentStep}/5** — use \`elon-${nextName}\` when ready.`);
+          verificationLines.push(`\n**Proceed to Step ${state.currentStep}/5** — use \`elon-${nextName}\` when ready.`);
         } else {
-          verificationLines.push(``);
-          verificationLines.push(`**🎉 All 5 steps completed!** The algorithm is fully applied.`);
+          verificationLines.push(`\n**🎉 All 5 steps completed!**`);
         }
 
         output.text = textBefore + verificationLines.join("\n");
@@ -1382,65 +890,23 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
           const now = Date.now();
           if (now - lastNotified > 30_000) {
             lastNotified = now;
-            const msg = hasMore
-              ? `Step ${step} complete. Proceeding to Step ${step + 1}.`
-              : "All 5 algorithm steps complete. Maximum velocity achieved.";
-
-            try {
-              await client.tui.showToast({
-                body: {
-                  title: "Musk Algorithm",
-                  message: msg,
-                  variant: "info",
-                },
-              });
-            } catch (err) {
-              console.warn("[elon-algorithm] TUI toast failed:", err);
-            }
-
-            try {
-              await $`osascript -e 'display notification "${msg}" with title "Musk Algorithm"'`.quiet().nothrow();
-            } catch (err) {
-              console.warn("[elon-algorithm] macOS notification failed:", err);
-            }
+            const msg = hasMore ? `Step ${step} complete. Step ${step + 1} ready.` : "All 5 steps complete.";
+            try { await (client as any).tui.showToast({ body: { title: "Musk Algorithm", message: msg, variant: "info" } }); } catch {}
+            try { await $`osascript -e 'display notification "${msg}" with title "Musk Algorithm"'`.quiet().nothrow(); } catch {}
           }
         }
       } else {
         const feedback: string[] = [];
-        feedback.push(``);
-        feedback.push(`---`);
-        feedback.push(`### ⚠️ Elon Verification — Step ${step} Needs Attention`);
-        feedback.push(``);
-
+        feedback.push(``, `---`, `### ⚠️ Step ${step} Needs Attention`);
         if (validation.issues.length > 0) {
-          feedback.push(`**Issues found:**`);
-          for (const issue of validation.issues) {
-            feedback.push(`- ❌ ${issue}`);
-          }
-          feedback.push(``);
+          feedback.push(`\n**Issues:**`);
+          for (const issue of validation.issues) feedback.push(`- ❌ ${issue}`);
         }
-
         if (validation.suggestions.length > 0) {
-          feedback.push(`**Suggestions:**`);
-          for (const s of validation.suggestions) {
-            feedback.push(`- 💡 ${s}`);
-          }
-          feedback.push(``);
+          feedback.push(`\n**Suggestions:**`);
+          for (const s of validation.suggestions) feedback.push(`- 💡 ${s}`);
         }
-
-        feedback.push(`**Please revise your Step ${step} output above** — commit to a clear verdict, then emit \`<step_done step="${step}">\` again.`);
-
-        const subagentFindings = runSubagents(textBefore, step, state?.target ?? "unknown");
-        const subagentFailed = subagentFindings.filter(f => !f.passed);
-        if (subagentFailed.length > 0) {
-          feedback.push(``);
-          feedback.push(`**🔬 Additional framework checks flagged:**`);
-          for (const f of subagentFailed) {
-            feedback.push(`- ${f.icon} **${f.label}:** ${f.detail}`);
-            if (f.suggestion) feedback.push(`  → ${f.suggestion}`);
-          }
-        }
-
+        feedback.push(`\n**Revise and emit \`<step_done step="${step}">\` again.**`);
         output.text = textBefore + feedback.join("\n");
       }
     },
@@ -1448,59 +914,48 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
     "experimental.session.compacting": async (input, output) => {
       const state = sessions.get(input.sessionID);
       if (!state) return;
-
       const contextStr = buildCompactionContext(state);
-      if (contextStr) {
-        output.context.push(contextStr);
-      }
+      if (contextStr) output.context.push(contextStr);
     },
 
     "command.execute.before": async (input, output) => {
+      if (input.command === "elon-clear-blockers") {
+        const state = sessions.get(input.sessionID);
+        if (state) {
+          state.blockers = [];
+          const part: TextPart = {
+            id: randomUUID(), sessionID: input.sessionID, messageID: randomUUID(),
+            type: "text",
+            text: `✅ Blockers cleared. You can proceed with the algorithm.`,
+          };
+          output.parts = [part];
+          return;
+        }
+      }
+
       if (input.command !== "elon-algorithm" && input.command !== "elon-algo") return;
 
       const target = input.arguments?.trim() || "current codebase";
       const id = randomUUID();
-
       const state = initSessionState(target);
       sessions.set(input.sessionID, state);
 
-      const aliasHint = input.command === "elon-algo"
-        ? ""
-        : `\n> 💡 **Tip:** You can also use the shorter \`/elon-algo\` command.`;
-
       const part: TextPart = {
-        id,
-        sessionID: input.sessionID,
-        messageID: id,
-        type: "text",
+        id, sessionID: input.sessionID, messageID: id, type: "text",
         text: [
           `╔══════════════════════════════════════════════════╗`,
           `║     🚀 ELON MUSK'S ALGORITHM — ACTIVATED        ║`,
           `╚══════════════════════════════════════════════════╝`,
-          ``,
-          `The 5-step engineering algorithm will be applied to: **${target}**`,
-          ``,
-          `The order IS the algorithm:`,
-          ``,
+          ``, `The 5-step engineering algorithm will be applied to: **${target}**`,
+          ``, `The order IS the algorithm:`, ``,
           `**Step 1 — Question** \`elon-question\``,
-          `  "Every requirement must have a named author."`,
-          ``,
           `**Step 2 — Delete** \`elon-delete\``,
-          `  "If <10% is added back, you didn't delete enough."`,
-          ``,
           `**Step 3 — Simplify** \`elon-simplify\``,
-          `  "Never optimize what should be deleted."`,
-          ``,
           `**Step 4 — Accelerate** \`elon-accelerate\``,
-          `  "Speed up cycles, but only after simplifying."`,
-          ``,
-          `**Step 5 — Automate** \`elon-automate\``,
-          `  "Last step. Don't automate waste."`,
-          ``,
-          `Run each step's tool individually, or use \`elon-apply\` with \`target="${target}"\` to run them all.`,
-          ``,
-          `To skip a step, add \`skipSteps: [N]\` to the elon-apply tool call.`,
-          aliasHint,
+          `**Step 5 — Automate** \`elon-automate\``, ``,
+          `Run each step individually, or use \`elon-apply\` to run them all.`,
+          `Use \`elon-debt-index\` to measure technical debt.`,
+          `Use \`/elon-clear-blockers\` if subagent reviews block progress.`,
         ].join("\n"),
       };
       output.parts = [part];
