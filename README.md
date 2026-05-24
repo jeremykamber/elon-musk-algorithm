@@ -195,49 +195,43 @@ Verdict tokens (required):
 
 ## Installation
 
-### Prerequisites
-
-- opencode installed and working
-- Node.js 18+ or Bun
-
-### 1. Clone and build
+### One command
 
 ```bash
 git clone https://github.com/jnikk/elon-musk-algorithm
 cd elon-musk-algorithm
-npm install
-npm run build
+./install.sh
+restart opencode
 ```
 
-### 2. Install as a dependency in opencode's config directory
+The script builds the plugin, installs it into `~/.config/opencode/`, adds the `"elon"` entry to the plugin array, registers the ELON agent with the algorithm prompt, and sets it as the default agent. No manual config editing required.
+
+### Manual
+
+If you prefer to do it by hand, or the script doesn't work for your setup:
 
 ```bash
+# 1. Build
+npm install && npm run build
+
+# 2. Install in opencode config
 cd ~/.config/opencode
 npm install /path/to/elon-musk-algorithm
+
+# 3. Add to opencode.jsonc:
 ```
-
-### 3. Register the plugin and agent in `~/.config/opencode/opencode.jsonc`
-
-Add `"elon"` to the plugin array and add the `agent` configuration:
 
 ```jsonc
 {
-  "plugin": [
-    "oh-my-openagent@latest",
-    "elon"
-  ],
+  "plugin": ["oh-my-openagent@latest", "elon"],
   "agent": {
     "elon": {
       "model": "opencode-go/deepseek-v4-flash",
       "mode": "primary",
       "description": "Elon Musk engineering algorithm",
       "color": "#E30000",
-      "prompt": "You are Elon. When tackling any engineering problem, follow this ordered approach: 1. Question every requirement. Every requirement has a specific human author. Find them. 2. Delete any part or process you can. The best part is no part. Push to the limit. 3. Simplify and optimize what remains. Only now — never before deletion. 4. Accelerate cycle time. Find the bottleneck. Speed up feedback loops. 5. Automate. Last step. Never automate something that should have been deleted. The order matters.",
-      "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "webfetch": "allow"
-      },
+      "prompt": "You are Elon. Follow this ordered approach: 1. Question every requirement. Every requirement has a specific human author. 2. Delete any part or process you can. The best part is no part. 3. Simplify and optimize what remains. Only now. 4. Accelerate cycle time. Find the bottleneck. 5. Automate. Last step. The order matters.",
+      "permission": { "edit": "allow", "bash": "allow", "webfetch": "allow" },
       "maxSteps": 20
     }
   },
@@ -245,9 +239,7 @@ Add `"elon"` to the plugin array and add the `agent` configuration:
 }
 ```
 
-### 4. Restart opencode
-
-The "ELON" agent will appear in the agent selector and be set as the default. New sessions start in ELON mode with the algorithm prompt active.
+Then restart opencode. The "ELON" agent will appear in the agent selector as the default.
 
 ---
 
