@@ -526,6 +526,121 @@ The order is the algorithm. Break the order, break the result.`,
   },
 });
 
+const elonIdiotIndex = tool({
+  description: `Calculate the Idiot Index for any part, process, or product.
+
+The Idiot Index answers: "How much more does a finished product cost than the cost of its raw materials?"
+
+Formula: finished cost / raw material cost
+
+- Ratio <3:  Excellent. Efficient design and manufacturing.
+- Ratio 3-10: Fair. Room for improvement in process efficiency.
+- Ratio 10-20: High. Significant waste in design or manufacturing.
+- Ratio >20:  Idiotic. You're adding enormous cost through inefficient processes.
+
+Elon expects all engineers to know the idiot index of every part in their systems at all times.`,
+  args: {
+    part: tool.schema
+      .string()
+      .describe("The name of the part, process, or product to analyze"),
+    finishedCost: tool.schema
+      .number()
+      .positive()
+      .describe("The current finished cost of the part (in any unit)"),
+    rawMaterialCost: tool.schema
+      .number()
+      .positive()
+      .describe("The cost of the raw materials (same unit as finishedCost)"),
+    context: tool.schema
+      .string()
+      .optional()
+      .describe("Additional context about manufacturing process, volumes, or constraints"),
+  },
+  async execute(args) {
+    const ratio = args.finishedCost / args.rawMaterialCost;
+    const roundedRatio = Math.round(ratio * 100) / 100;
+
+    const waste = args.finishedCost - args.rawMaterialCost;
+    const wastePercent = Math.round((waste / args.finishedCost) * 100);
+
+    let rating: string;
+    let verdict: string;
+    let diagnosis: string;
+
+    if (ratio < 3) {
+      rating = "Excellent";
+      verdict = "✅ Low Idiot Index";
+      diagnosis = "Efficient design and manufacturing. The cost structure is close to raw material value. Focus on maintaining this discipline as you scale.";
+    } else if (ratio < 10) {
+      rating = "Fair";
+      verdict = "🔶 Moderate Idiot Index";
+      diagnosis = "There's meaningful waste in the process. Apply the algorithm: question requirements (Step 1), delete unnecessary steps (Step 2), simplify the design (Step 3). Each elimination directly reduces the index.";
+    } else if (ratio < 20) {
+      rating = "High";
+      verdict = "⚠️ High Idiot Index";
+      diagnosis = "You're adding significant cost through inefficient processes. Start from first principles: what is the theoretical minimum cost? What processes are adding cost without adding value? Consider vertical integration of expensive components.";
+    } else {
+      rating = "Idiotic";
+      verdict = "🚨 Idiotic Idiot Index";
+      diagnosis = "This is exactly what Elon warns about. The finished cost is completely detached from material value. Go back to Step 0 (first principles) and rebuild from the axiomatic base. Question every requirement. Ask: what would the platonic ideal of this part look like? What would it take to get the raw material cost as the asymptotic limit?";
+    }
+
+    const lines: string[] = [];
+    lines.push(`╔════════════════════════════════════════════╗`);
+    lines.push(`║       IDIOT INDEX ANALYSIS                ║`);
+    lines.push(`╚════════════════════════════════════════════╝`);
+    lines.push(``);
+    lines.push(`Part:            ${args.part}`);
+    lines.push(`Finished cost:   ${args.finishedCost}`);
+    lines.push(`Raw material:    ${args.rawMaterialCost}`);
+    if (args.context) lines.push(`Context:         ${args.context}`);
+    lines.push(``);
+    lines.push(`Idiot Index:     ${roundedRatio}`);
+    lines.push(`Rating:          ${rating} (${verdict})`);
+    lines.push(`Waste per unit:  ${waste} (${wastePercent}% of finished cost)`);
+    lines.push(``);
+    lines.push(`Diagnosis:`);
+    lines.push(`  ${diagnosis}`);
+    lines.push(``);
+
+    const annualVolumeValue = args.finishedCost * 100_000;
+    const rawValueAtScale = args.rawMaterialCost * 100_000;
+    const wasteAtScale = annualVolumeValue - rawValueAtScale;
+    lines.push(`Scale Check (100,000 units/year):`);
+    lines.push(`  Annual cost at scale: ${annualVolumeValue}`);
+    lines.push(`  Raw material at scale: ${rawValueAtScale}`);
+    lines.push(`  Annual waste at scale: ${wasteAtScale}`);
+    lines.push(`  → If this is still expensive at scale, volume is not the issue (per Elon).`);
+    lines.push(`     The problem is fundamental to the design or process.`);
+    lines.push(``);
+
+    lines.push(`Suggestions:`);
+    if (ratio >= 10) {
+      lines.push(`  - Apply first-principles: what is the theoretical minimum cost?`);
+      lines.push(`  - Question every manufacturing step: does it add value?`);
+      lines.push(`  - Consider vertical integration for high-cost components`);
+    }
+    if (ratio >= 3) {
+      lines.push(`  - Look at the 80/20: which single step adds the most waste?`);
+      lines.push(`  - Can the design be simplified to use fewer or cheaper materials?`);
+    }
+    lines.push(`  - Know this number. Track it. Make it a KPI.`);
+    lines.push(``);
+    lines.push(`"If the ratio is high, you're an idiot." — Elon Musk`);
+
+    return {
+      title: `Idiot Index: ${args.part} — ${roundedRatio}`,
+      output: lines.join("\n"),
+      metadata: {
+        idiotIndex: roundedRatio,
+        rating,
+        waste,
+        wastePercent,
+      },
+    };
+  },
+});
+
 // ─── Helper Functions ────────────────────────────────────────────────────────
 
 function containsTriggerKeyword(text: string, keywords: string[]): string | null {
@@ -604,7 +719,7 @@ function buildCompactionContext(state: SessionAlgoState): string {
   return parts.join(". ");
 }
 
-const ALGO_TOOLS = new Set(["elon-question", "elon-delete", "elon-simplify", "elon-accelerate", "elon-automate", "elon-apply"]);
+const ALGO_TOOLS = new Set(["elon-question", "elon-delete", "elon-simplify", "elon-accelerate", "elon-automate", "elon-apply", "elon-idiot-index"]);
 const AMBIENT_TOOLS = new Set(["bash", "write", "edit", "refactor", "move", "copy", "delete", "rename"]);
 
 const STEP_AMBINT_HINTS: Record<number, string> = {
@@ -634,6 +749,7 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
       "elon-accelerate": elonAccelerate,
       "elon-automate": elonAutomate,
       "elon-apply": elonApply,
+      "elon-idiot-index": elonIdiotIndex,
     },
 
     config: async (_input: Config) => {
