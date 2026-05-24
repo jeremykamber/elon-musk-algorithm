@@ -44,7 +44,7 @@ const ALGORITHM_PROMPT = `## Engineering Algorithm
 
 When tackling any engineering problem, consider this ordered approach:
 
-1. **Question every requirement.** Every requirement has a specific human author. Find them. Challenge the requirement. Does it still hold? Is the original constraint still valid?
+1. **Question every requirement.** Every requirement has a specific human author. Find them. Challenge the requirement. Does it still hold? Is the original constraint still valid? Laws can be changed.
 
 2. **Delete any part or process you can.** Before optimizing, ask: does this need to exist? The best part is no part. Push to the limit. If you don't add back 10% of what you deleted, you didn't delete enough.
 
@@ -56,15 +56,35 @@ When tackling any engineering problem, consider this ordered approach:
 
 **The order matters.** The most common mistake is to optimize something that shouldn't exist.`;
 
+// ─── Interrogation System ────────────────────────────────────────────────────
+
+const INTERROGATION_QUESTIONS = [
+  `**Elon:** "Alright. One sentence. What exactly are you trying to build? If it takes more than one sentence, you haven't thought about it enough."`,
+  `**Elon:** "Why does this need to exist? Be specific. What breaks if you don't build it? Whose life is worse?"`,
+  `**Elon:** "Who actually asked for this? Not 'the market' or 'the users' — a specific person. Have you talked to them? What did they say?"`,
+  `**Elon:** "What's the absolute minimum version of this that delivers value? Strip it down. What's the core mechanism?"`,
+  `**Elon:** "How will you know if it's working? What's the one metric that tells you this was worth building?"`,
+];
+
+interface InterrogationState {
+  stage: number;
+}
+
+const interrogations = new Map<string, InterrogationState>();
 const activatedSessions = new Set<string>();
+
+function startInterrogation(sessionID: string): void {
+  interrogations.set(sessionID, { stage: 0 });
+  activatedSessions.delete(sessionID);
+}
 
 // ─── Throttle State ──────────────────────────────────────────────────────────
 
 const keywordThrottle = new Map<string, number>();
-const analysisThrottle = new Map<string, number>();
+const reviewThrottle = new Map<string, number>();
 const ELON_INTERVAL = 60_000;
 const KEYWORD_INTERVAL = 30_000;
-const ANALYSIS_INTERVAL = 120_000;
+const REVIEW_INTERVAL = 120_000;
 
 function isThrottled(map: Map<string, number>, key: string, interval: number): boolean {
   const last = map.get(key);
@@ -72,77 +92,92 @@ function isThrottled(map: Map<string, number>, key: string, interval: number): b
   return Date.now() - last < interval;
 }
 
-// ─── Elon Interrogation ─────────────────────────────────────────────────────
+// ─── LLM Review Helpers ─────────────────────────────────────────────────────
 
-const ELON_CHALLENGES = [
-  `**Elon:** "Does that actually need to exist? I mean it. What happens if you just delete it and see if anything breaks?"`,
-  `**Elon:** "How much of that is essential complexity and how much is just how you've always done it? Be honest."`,
-  `**Elon:** "That's 3 files for what could be 1. What's the minimum number of files this actually needs?"`,
-  `**Elon:** "You added abstractions. Why? What concrete problem do they solve today — not in some hypothetical future?"`,
-  `**Elon:** "If you had to ship this in 1 hour, what would you cut? Cut that now."`,
-  `**Elon:** "Run the idiot index on this. What's the ratio of actual logic to boilerplate/wrappers/indirection?"`,
-  `**Elon:** "What's the ONE thing this code does? If the answer takes more than 5 words, it's doing too much."`,
-  `**Elon:** "You're optimizing something. Have you verified step 1 and 2 first? Did you question the requirement? Did you try deleting it?"`,
-  `**Elon:** "Precision is not expensive. It's about caring. Does each variable name, each function boundary actually reflect the problem? Or did you just accept whatever came out?"`,
-  `**Elon:** "A competitor ships this with half the code. What are they doing that you aren't?"`,
-];
-
-function pickChallenge(code: string): string {
-  const hasConditionals = /\bif\s*\(|\bswitch\b|\bcase\b/.test(code);
-  const hasAbstraction = /\b(interface|abstract|factory|singleton|decorator)\b/i.test(code);
-  const hasTypeEscapes = /\bas\s+any\b|@ts-ignore/.test(code);
-  const lines = code.split("\n").length;
-
-  if (hasTypeEscapes) return ELON_CHALLENGES[3];
-  if (hasAbstraction && lines > 80) return ELON_CHALLENGES[5];
-  if (lines > 100) return ELON_CHALLENGES[1];
-  if (hasConditionals && lines > 60) return ELON_CHALLENGES[7];
-  return ELON_CHALLENGES[Math.floor(Math.random() * ELON_CHALLENGES.length)];
+function extractSessionId(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  return typeof r.id === "string" ? r.id : null;
 }
 
-// ─── Heuristic Code Analysis ─────────────────────────────────────────────────
-
-interface SimplifyFinding {
-  severity: "info" | "warning" | "critical";
-  icon: string;
-  category: string;
-  detail: string;
+function extractReviewText(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const resp = result as Record<string, unknown>;
+  const parts = resp.parts;
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((p): p is Record<string, unknown> => typeof p === "object" && p !== null)
+    .map((p) => p.text)
+    .filter((t): t is string => typeof t === "string")
+    .join("\n");
 }
 
-const IMPLEMENT_TOOLS = new Set(["write", "edit", "refactor"]);
+const ELON_REVIEW_PROMPT = `You are Elon Musk reviewing code. Be direct, blunt, and critical. Your job is to find unnecessary complexity, violations of engineering principles, and opportunities to simplify.
 
-function analyzeCode(code: string): SimplifyFinding[] {
-  const findings: SimplifyFinding[] = [];
-  const lines = code.split("\n");
-  const totalLines = lines.length;
+Review the following code against these criteria:
 
-  if (totalLines > 200) findings.push({ severity: "warning", icon: "📏", category: "File Length", detail: `File is ${totalLines} lines.` });
-  let maxIndent = 0;
-  for (const line of lines) { const indent = line.search(/\S/); if (indent > maxIndent) maxIndent = indent; }
-  if (maxIndent > 24) findings.push({ severity: "critical", icon: "🪺", category: "Nesting", detail: `Code reaches depth ${maxIndent / 2}.` });
-  else if (maxIndent > 16) findings.push({ severity: "warning", icon: "🪺", category: "Nesting", detail: `Depth ${maxIndent / 2}.` });
-  const condCount = (code.match(/\bif\s*\(/g) || []).length + (code.match(/\belse\s+if\b/g) || []).length;
-  if (totalLines > 0 && condCount / totalLines > 0.2) findings.push({ severity: "warning", icon: "🔀", category: "Conditionals", detail: `${condCount} in ${totalLines} lines (${Math.round(condCount / totalLines * 100)}%).` });
-  const escapes = (code.match(/\bas\s+any\b|@ts-ignore|@ts-expect-error/g) || []).length;
-  if (escapes > 0) findings.push({ severity: "warning", icon: "🏗️", category: "Type Escapes", detail: `${escapes} violations.` });
-  const emptyCatches = (code.match(/catch\s*\([\w\s]+\)\s*\{\s*\}/g) || []).length;
-  if (emptyCatches > 0) findings.push({ severity: "critical", icon: "🕳️", category: "Empty Catches", detail: `${emptyCatches} empty catch blocks.` });
-  const debt = (code.match(/\bTODO|FIXME|HACK|XXX|WORKAROUND\b/gi) || []).length;
-  if (debt > 3) findings.push({ severity: "warning", icon: "📋", category: "Debt Markers", detail: `${debt} markers.` });
-  else if (debt > 0) findings.push({ severity: "info", icon: "📋", category: "Debt Markers", detail: `${debt} marker(s).` });
-  return findings;
-}
+1. **S — Single Responsibility**: Does each function/class/module do ONE thing? If it does more, flag it.
+2. **O — Open/Closed**: Is it extensible without modification? If it requires changes to add features, flag it.
+3. **L — Liskov Substitution**: Are subtypes usable through their base interface? If not, flag it.
+4. **I — Interface Segregation**: Are interfaces small and focused? If any are bloated, flag it.
+5. **D — Dependency Inversion**: Does it depend on abstractions, not concretions? If not, flag it.
+6. **DRY**: Is logic duplicated? Flag exact or near-exact duplication.
+7. **TDD**: Does the code look testable? Are there clear boundaries for testing? If not, flag it.
+8. **First Principles**: Strip the problem to its fundamentals. Is any of this code solving a problem that shouldn't exist in the first place?
+9. **The Best Part is No Part**: What in this code could be deleted entirely without changing behavior?
+10. **Fewer Things**: Is there over-abstraction? Wrappers wrapping wrappers? Unnecessary indirection?
 
-function findingsToOutput(findings: SimplifyFinding[], challenge: string | null): string {
-  if (findings.length === 0 && !challenge) return "";
-  const lines: string[] = [];
-  lines.push(``, `---`);
-  for (const f of findings) {
-    const icon = f.severity === "critical" ? "🔴" : f.severity === "warning" ? "🟡" : "🔵";
-    lines.push(`\n${icon} **${f.category}:** ${f.detail}`);
+For each issue found, include:
+- Severity: CRITICAL (must fix), WARNING (should fix), INFO (consider)
+- What the issue is
+- How to fix it
+
+After your review, give a final verdict:
+- SIMPLIFY_NEEDED if the code has CRITICAL issues or is fundamentally over-engineered
+- MINOR_FIXES if there are only minor issues
+- CLEAN if the code is solid
+
+Keep your review under 400 words. Be direct. Use Elon's voice — blunt, no sugarcoating.
+
+\`\`\`
+{CODE}
+\`\`\``;
+
+async function runElonReview(client: unknown, code: string, sessionID: string): Promise<string | null> {
+  const c = client as { session: { create: Function; delete: Function; prompt: Function } };
+  let childId: string | null = null;
+
+  try {
+    const created = await c.session.create({ body: { parentID: sessionID } });
+    childId = extractSessionId(created);
+    if (!childId) return null;
+
+    const prompt = ELON_REVIEW_PROMPT.replace("{CODE}", code.slice(0, 4000));
+    const result = await c.session.prompt({ body: { parts: [{ type: "text" as const, text: prompt }] }, path: { id: childId } });
+    const text = extractReviewText(result);
+
+    await c.session.delete({ path: { id: childId } }).catch(() => {});
+    childId = null;
+
+    if (!text || text.length < 50) return null;
+
+        const isSimplifyNeeded = /SIMPLIFY_NEEDED/i.test(text);
+    const lines = [
+      ``,
+      `---`,
+      `### 🔬 Elon Code Review`,
+      ``,
+      text,
+    ];
+    if (isSimplifyNeeded) {
+      lines.push(``, `> 🚨 **Elon's verdict: SIMPLIFY NEEDED.** This code has fundamental issues. Consider a dedicated simplification pass.`);
+    }
+    return lines.join("\n");
+  } catch (err) {
+    console.warn("[elon] LLM review failed:", err);
+    if (childId) c.session.delete({ path: { id: childId } }).catch(() => {});
+    return null;
   }
-  if (challenge) lines.push(`\n${challenge}`);
-  return lines.join("\n");
 }
 
 // ─── Technical Debt Index Tool ─────────────────────────────────────────────
@@ -182,7 +217,7 @@ function containsTriggerKeyword(text: string, keywords: string[]): string | null
 
 // ─── Plugin Entry ─────────────────────────────────────────────────────────
 
-const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
+const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree }) => {
   currentConfig = loadConfig(worktree);
   configWorktree = worktree;
 
@@ -196,14 +231,38 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
     },
 
     "chat.message": async (input, output) => {
+      const sessId = input.sessionID;
+
+      const inter = interrogations.get(sessId);
+      if (inter !== undefined) {
+        const nextStage = inter.stage + 1;
+        if (nextStage >= INTERROGATION_QUESTIONS.length) {
+            interrogations.delete(sessId);
+          activatedSessions.add(sessId);
+          output.parts.push({
+            id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
+            type: "text" as const,
+            text: `\n> ✅ **Interrogation complete.** The algorithm is now active. Use the engineering principles as your guide.`,
+          });
+        } else {
+          interrogations.set(sessId, { stage: nextStage });
+          output.parts.push({
+            id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
+            type: "text" as const,
+            text: `\n${INTERROGATION_QUESTIONS[nextStage]}`,
+          });
+        }
+        return;
+      }
+
       if (!currentConfig.notifications) return;
-      if (isThrottled(keywordThrottle, input.sessionID, KEYWORD_INTERVAL)) return;
+      if (isThrottled(keywordThrottle, sessId, KEYWORD_INTERVAL)) return;
       const userText = output.parts.filter((p): p is TextPart => p.type === "text").map((p) => p.text).join(" ");
       const match = containsTriggerKeyword(userText, currentConfig.keywords);
       if (match) {
-        keywordThrottle.set(input.sessionID, Date.now());
+        keywordThrottle.set(sessId, Date.now());
         output.parts.push({
-          id: randomUUID(), sessionID: input.sessionID, messageID: input.messageID ?? randomUUID(),
+          id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
           type: "text" as const,
           text: `\n> 💡 You mentioned "*${match}*" — consider \`/elon-algorithm\``,
         });
@@ -212,46 +271,30 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
 
     "tool.execute.after": async (input, output) => {
       const toolName = input.tool.toLowerCase();
-      if (!IMPLEMENT_TOOLS.has(toolName)) return;
+      if (toolName !== "write" && toolName !== "edit" && toolName !== "refactor") return;
       const code = input.args?.content ?? input.args?.newString ?? null;
       if (!code || typeof code !== "string" || code.length < 200) return;
 
-      const sessionKey = `${input.sessionID}:${toolName}`;
+      if (isThrottled(reviewThrottle, `${input.sessionID}:review`, REVIEW_INTERVAL)) return;
+      reviewThrottle.set(`${input.sessionID}:review`, Date.now());
 
-      let findings: SimplifyFinding[] = [];
-      let challenge: string | null = null;
-
-      if (!isThrottled(analysisThrottle, sessionKey, ANALYSIS_INTERVAL)) {
-        analysisThrottle.set(sessionKey, Date.now());
-        findings = analyzeCode(code);
-      }
-
-      if (!isThrottled(analysisThrottle, `${input.sessionID}:elon`, ELON_INTERVAL)) {
-        analysisThrottle.set(`${input.sessionID}:elon`, Date.now());
-        challenge = pickChallenge(code);
-      }
-
-      const outputText = findingsToOutput(findings, challenge);
-      if (outputText) output.output = output.output + outputText;
+      const review = await runElonReview(client, code, input.sessionID);
+      if (review) output.output = output.output + review;
     },
 
     "command.execute.before": async (input, output) => {
       if (input.command === "elon-algorithm") {
-        activatedSessions.add(input.sessionID);
+        startInterrogation(input.sessionID);
         const id = randomUUID();
         output.parts = [{
           id, sessionID: input.sessionID, messageID: id,
           type: "text" as const,
           text: [
-            `🚀 **Algorithm activated.** Engineering principles will guide this session.`,
+            `🚀 **Algorithm initiated.** Before we start, I need to interrogate you. Answer honestly.`,
             ``,
-            `**1. Question** — named author required`,
-            `**2. Delete** — best part is no part`,
-            `**3. Simplify** — only what survived step 2`,
-            `**4. Accelerate** — find the bottleneck`,
-            `**5. Automate** — last, never before deletion`,
+            INTERROGATION_QUESTIONS[0],
             ``,
-            `\`elon-debt-index\` — measure technical debt.`,
+            `> *Answer the question above. Each answer leads to the next. After all questions, the algorithm activates.*`,
           ].join("\n"),
         }];
         return;
