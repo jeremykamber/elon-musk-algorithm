@@ -1,17 +1,44 @@
-import type { Plugin, Hooks } from "@opencode-ai/plugin";
+import type { Plugin, Hooks, Config } from "@opencode-ai/plugin";
 import type { TextPart } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin/tool";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface ElonConfig {
   mode: "full" | "gentle" | "steps-only";
   keywords: string[];
   notifications: boolean;
 }
+
+interface SessionAlgoState {
+  target: string;
+  currentStep: number;
+  completedSteps: number[];
+  verdicts: Record<number, string>;
+  context: string[];
+  activatedAt: number;
+}
+
+interface StepFormatConfig {
+  stepNum: number;
+  icon: string;
+  title: string;
+  questions: string[];
+  famousQuote: string;
+  verdicts: { label: string; desc: string }[];
+}
+
+interface StepValidationResult {
+  valid: boolean;
+  verdict?: string;
+  issues: string[];
+  suggestions: string[];
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_KEYWORDS = [
   "optimize",
@@ -31,25 +58,6 @@ const DEFAULT_CONFIG: ElonConfig = {
   keywords: DEFAULT_KEYWORDS,
   notifications: false,
 };
-
-function loadConfig(worktree: string): ElonConfig {
-  try {
-    const configPath = join(worktree, "elon.json");
-    if (!existsSync(configPath)) return DEFAULT_CONFIG;
-    const raw = readFileSync(configPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    return {
-      mode: parsed.mode ?? DEFAULT_CONFIG.mode,
-      keywords: parsed.keywords ?? DEFAULT_CONFIG.keywords,
-      notifications: parsed.notifications ?? DEFAULT_CONFIG.notifications,
-    };
-  } catch (err) {
-    console.warn("[elon-algorithm] Failed to load elon.json, using defaults:", err);
-    return DEFAULT_CONFIG;
-  }
-}
-
-// ─── System Prompt Templates ──────────────────────────────────────────────────
 
 const SYSTEM_PROMPT_FULL = `## ELON MUSK'S ALGORITHM — Operating Protocol
 
@@ -80,7 +88,11 @@ Apply automation LAST. Automating something that should have been deleted or sim
 - **20% Error Tolerance**: ~20% of your decisions will be wrong. Accept it. Speed beats perfection.
 
 ### Step Completion
-After completing each step, emit \`<step_done step="N">\` at the end of your response, then wait for the user to say "proceed" before starting the next step.`;
+After completing each step:
+1. Commit to exactly one verdict
+2. Delete all other verdict options from your response
+3. Emit \`<step_done step="N">\` at the end of your response
+4. Wait for the system to validate before starting the next step`;
 
 const SYSTEM_PROMPT_GENTLE = `## Musk Algorithm (Gentle Mode)
 
@@ -101,289 +113,268 @@ const SYSTEM_PROMPT_STEPS_ONLY = `## Musk Algorithm Steps
 4. Accelerate cycle time
 5. Automate`;
 
-// ──────────────────────────────────────────────
-// Step 1 — Question Every Requirement
-// ──────────────────────────────────────────────
-const elonQuestion = tool({
-  description: `[Step 1/5] Question every requirement.
+// ─── Config Management ───────────────────────────────────────────────────────
 
-Every requirement (spec, ticket, constraint, rule) must have a named author.
-Never accept anonymous requirements from "the department" or "the spec."
+let currentConfig: ElonConfig = DEFAULT_CONFIG;
+let configWorktree: string = "";
 
-Returns a structured challenge of the requirement including:
-- Who authored it
-- What problem it solves
-- What happens if removed
-- Whether it's still valid today`,
-  args: {
-    requirement: tool.schema
-      .string()
-      .describe("The requirement, constraint, or rule to challenge"),
-    author: tool.schema
-      .string()
-      .optional()
-      .describe("Who authored this requirement (if known)"),
-    context: tool.schema
-      .string()
-      .optional()
-      .describe("The broader context this requirement lives in"),
-  },
-  async execute({ requirement, author, context }) {
-    const lines: string[] = [];
-    lines.push(`🔍 STEP 1: QUESTION EVERY REQUIREMENT`);
-    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lines.push(`Requirement: ${requirement}`);
-    if (author) lines.push(`Author:       ${author}`);
-    else
-      lines.push(`Author:       ⚠️  UNKNOWN — no named author (flag this)`);
-    if (context) lines.push(`Context:      ${context}`);
-    lines.push(``);
-    lines.push(`Challenge Questions:`);
-    lines.push(`  1. Who specifically authored this requirement?`);
-    lines.push(
-      author
-        ? `     → ${author}. Can they still defend it today?`
-        : `     → UNKNOWN. Unacceptable — every requirement needs a named author.`
-    );
-    lines.push(`  2. What actual problem does this solve?`);
-    lines.push(`     → Consider: user need vs. internal process need`);
-    lines.push(`  3. What happens if we remove it completely?`);
-    lines.push(`     → Consider: feature loss, breakage, dependencies`);
-    lines.push(
-      `  4. Is the original constraint that created this still valid?`
-    );
-    lines.push(
-      `  5. Would we make the same decision today, knowing what we know now?`
-    );
-    lines.push(``);
-    lines.push(`Verdict (choose one and delete the others):`);
-    lines.push(`  ✅ VALIDATED — requirement survived challenge (proceed to Step 2)`);
-    lines.push(`  ⚠️  FLAGGED — needs further investigation`);
-    lines.push(`  ❌ REJECTED — requirement should be removed`);
-    lines.push(``);
-    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
-
+function loadConfig(worktree: string): ElonConfig {
+  try {
+    const configPath = join(worktree, "elon.json");
+    if (!existsSync(configPath)) return DEFAULT_CONFIG;
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw);
     return {
-      title: "Step 1: Question Every Requirement",
-      output: lines.join("\n"),
+      mode: parsed.mode ?? DEFAULT_CONFIG.mode,
+      keywords: parsed.keywords ?? DEFAULT_CONFIG.keywords,
+      notifications: parsed.notifications ?? DEFAULT_CONFIG.notifications,
     };
-  },
-});
+  } catch (err) {
+    console.warn("[elon-algorithm] Failed to load elon.json, using defaults:", err);
+    return DEFAULT_CONFIG;
+  }
+}
 
-// ──────────────────────────────────────────────
-// Step 2 — Delete Any Part or Process You Can
-// ──────────────────────────────────────────────
-const elonDelete = tool({
-  description: `[Step 2/5] Delete any part or process you can.
+function reloadConfig(): void {
+  if (configWorktree) {
+    currentConfig = loadConfig(configWorktree);
+  }
+}
 
-"if you do not end up adding back at least 10% of what you delete, you didn't delete enough."
+// ─── State Machine ───────────────────────────────────────────────────────────
 
-Try to make the system work WITHOUT the part/process.
-Only add it back if you actually need it.`,
-  args: {
-    target: tool.schema
-      .string()
-      .describe("The part, process, file, function, or dependency to evaluate for deletion"),
-    context: tool.schema
-      .string()
-      .optional()
-      .describe("The system context this target lives in"),
-  },
-  async execute({ target, context }) {
-    const lines: string[] = [];
-    lines.push(`🗑️  STEP 2: DELETE ANY PART OR PROCESS YOU CAN`);
-    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lines.push(`Target: ${target}`);
-    if (context) lines.push(`Context: ${context}`);
-    lines.push(``);
-    lines.push(`Deletion Analysis:`);
-    lines.push(`  1. Can the system work WITHOUT this?`);
-    lines.push(`     → Evaluate: direct usage, indirect dependencies, downstream effects`);
-    lines.push(`  2. What is the MINIMUM version of this that works?`);
-    lines.push(`     → Consider: simpler alternative, smaller scope`);
-    lines.push(`  3. What breaks if this is completely gone?`);
-    lines.push(`     → List affected components, callers, consumers`);
-    lines.push(`  4. Would a competitor ship without this?`);
-    lines.push(`     → Honest answer reveals what's essential vs. nice-to-have`);
-    lines.push(``);
-    lines.push(`The 10% Rule:`);
-    lines.push(`  If <10% of deletions get reverted, you were too conservative.`);
-    lines.push(`  Be aggressive. You can always add back what's truly needed.`);
-    lines.push(``);
-    lines.push(`Verdict (choose one and delete the others):`);
-    lines.push(`  🗑️  DELETE — this can be removed entirely`);
-    lines.push(`  ✂️  TRIM — can be reduced but not eliminated`);
-    lines.push(`  ✅ KEEP — essential (proceed to Step 3)`);
-    lines.push(``);
-    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
+const sessions = new Map<string, SessionAlgoState>();
 
-    return {
-      title: "Step 2: Delete Any Part or Process You Can",
-      output: lines.join("\n"),
-    };
-  },
-});
+function initSessionState(target: string): SessionAlgoState {
+  return {
+    target,
+    currentStep: 1,
+    completedSteps: [],
+    verdicts: {},
+    context: [],
+    activatedAt: Date.now(),
+  };
+}
 
-// ──────────────────────────────────────────────
-// Step 3 — Simplify and Optimize
-// ──────────────────────────────────────────────
-const elonSimplify = tool({
-  description: `[Step 3/5] Simplify and optimize what remains.
+function canExecuteStep(state: SessionAlgoState | undefined, stepNum: number): boolean {
+  if (!state || state.currentStep === 0) return false;
+  if (stepNum === state.currentStep) return true;
+  if (state.completedSteps.includes(stepNum)) return true;
+  return false;
+}
 
-"The most common error of a smart engineer is to optimize a thing that should not exist."
+function advanceStep(state: SessionAlgoState): boolean {
+  if (state.currentStep >= 5) {
+    state.completedSteps.push(state.currentStep);
+    state.currentStep = 0;
+    return false;
+  }
+  state.completedSteps.push(state.currentStep);
+  state.currentStep++;
+  return true;
+}
 
-This step comes THIRD — not first. Only optimize what survived Step 2.`,
-  args: {
-    target: tool.schema
-      .string()
-      .describe("The component, function, or process that survived deletion and needs simplification"),
-    context: tool.schema
-      .string()
-      .optional()
-      .describe("Additional context about the target"),
-  },
-  async execute({ target, context }) {
-    const lines: string[] = [];
-    lines.push(`🔧 STEP 3: SIMPLIFY AND OPTIMIZE`);
-    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lines.push(`Target: ${target}`);
-    if (context) lines.push(`Context: ${context}`);
-    lines.push(``);
-    lines.push(`Simplification Analysis:`);
-    lines.push(`  1. Can this be SIMPLER?`);
-    lines.push(`     → Fewer branches, less state, less indirection`);
-    lines.push(`     → Reduce cognitive complexity`);
-    lines.push(`  2. Can this be FASTER given its current design?`);
-    lines.push(`     → Algorithmic improvements before micro-optimizations`);
-    lines.push(`  3. Can data structures be more efficient?`);
-    lines.push(`     → Right data structure for the access pattern`);
-    lines.push(`  4. Can interfaces be CLEANER?`);
-    lines.push(`     → Reduce API surface, improve naming, remove edge cases`);
-    lines.push(`  5. Can patterns be MORE CONSISTENT?`);
-    lines.push(`     → Follow established conventions in the codebase`);
-    lines.push(``);
-    lines.push(`⚠️  Measure before and after — intuition about performance is often wrong.`);
-    lines.push(``);
-    lines.push(`Verdict (choose one and delete the others):`);
-    lines.push(`  🔧 SIMPLIFIED — restructuring applied`);
-    lines.push(`  ⚡ OPTIMIZED — performance improved`);
-    lines.push(`  ✅ BOTH — simplification and optimization applied`);
-    lines.push(`  ⏭️  ALREADY CLEAN — no changes needed (proceed to Step 4)`);
-    lines.push(``);
-    lines.push(`**You must commit to exactly one verdict above. Delete the three that don't apply.**`);
+// ─── Formatting Utilities ────────────────────────────────────────────────────
 
-    return {
-      title: "Step 3: Simplify and Optimize",
-      output: lines.join("\n"),
-    };
-  },
-});
+function buildStepOutput(
+  stepNum: number,
+  icon: string,
+  title: string,
+  target: string,
+  context: string | undefined,
+  questions: string[],
+  verdicts: { label: string; desc: string }[],
+): { title: string; output: string } {
+  const lines: string[] = [
+    `${icon} STEP ${stepNum}/5: ${title}`,
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+    `Target: ${target}`,
+  ];
+  if (context) lines.push(`Context: ${context}`);
+  lines.push(``, `Analysis:`);
+  for (const q of questions) lines.push(`  • ${q}`);
+  lines.push(``, `Verdict (choose one and delete the others):`);
+  for (const v of verdicts) lines.push(`  ${v.label} — ${v.desc}`);
+  lines.push(``);
+  const deleteCount = verdicts.length - 1;
+  lines.push(`**You must commit to exactly one verdict above. Delete the ${deleteCount} that don't apply.**`);
 
-// ──────────────────────────────────────────────
-// Step 4 — Accelerate Cycle Time
-// ──────────────────────────────────────────────
-const elonAccelerate = tool({
-  description: `[Step 4/5] Accelerate cycle time.
+  return {
+    title: `Step ${stepNum}: ${title}`,
+    output: lines.join("\n"),
+  };
+}
 
-"Every process can be speeded up. But only do this after the first three steps."
+// ─── Step Tool Factory ───────────────────────────────────────────────────────
 
-Speed up the feedback loops of what remains. Fast cycles beat optimization.`,
-  args: {
-    target: tool.schema
-      .string()
-      .describe("The process, pipeline, or workflow to accelerate"),
-    context: tool.schema
-      .string()
-      .optional()
-      .describe("Additional context about the target"),
-  },
-  async execute({ target, context }) {
-    const lines: string[] = [];
-    lines.push(`⚡ STEP 4: ACCELERATE CYCLE TIME`);
-    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lines.push(`Target: ${target}`);
-    if (context) lines.push(`Context: ${context}`);
-    lines.push(``);
-    lines.push(`Cycle Time Analysis:`);
-    lines.push(`  1. How long does ONE cycle currently take?`);
-    lines.push(`     → Measure end-to-end: from start to feedback`);
-    lines.push(`  2. What is the BOTTLENECK?`);
-    lines.push(`     → Identify the slowest step in the chain`);
-    lines.push(`  3. Can we PARALLELIZE?`);
-    lines.push(`     → Independent work streams running simultaneously`);
-    lines.push(`  4. Can we REDUCE HANDOFFS?`);
-    lines.push(`     → Fewer context switches, fewer queues`);
-    lines.push(`  5. Can we SHORTEN FEEDBACK LOOPS?`);
-    lines.push(`     → Faster testing, preview environments, earlier validation`);
-    lines.push(``);
-    lines.push(`Verdict (choose one and delete the others):`);
-    lines.push(`  ⏱️  CYCLE_REDUCED — measurable improvement achieved`);
-    lines.push(`  🎯 BOTTLENECK_IDENTIFIED — bottleneck found but not yet resolved`);
-    lines.push(`  ✅ ALREADY_OPTIMAL — no acceleration needed (proceed to Step 5)`);
-    lines.push(``);
-    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
+type StepToolArgs = {
+  target: string;
+  context?: string;
+};
 
-    return {
-      title: "Step 4: Accelerate Cycle Time",
-      output: lines.join("\n"),
-    };
-  },
-});
+function createStepTool(config: StepFormatConfig) {
+  return tool({
+    description: [
+      `[Step ${config.stepNum}/5] ${config.title}`,
+      ``,
+      config.famousQuote,
+      ``,
+      `This is step ${config.stepNum} of 5 in Elon Musk's engineering algorithm.`,
+      `If you haven't completed steps 1-${config.stepNum - 1} yet, go back and do them first.`,
+      `The order is the algorithm.`,
+    ].join("\n"),
+    args: {
+      target: tool.schema
+        .string()
+        .describe(`The target to evaluate for step ${config.stepNum}: ${config.title.toLowerCase()}`),
+      context: tool.schema
+        .string()
+        .optional()
+        .describe("Additional context about the target"),
+    },
+    async execute(args: StepToolArgs, ctx) {
+      const state = sessions.get(ctx.sessionID);
+      if (!state) {
+        return {
+          title: `Step ${config.stepNum} Blocked`,
+          output: `The algorithm hasn't been activated for this session. Run \`/elon-algorithm\` first to begin.`,
+        };
+      }
+      if (!canExecuteStep(state, config.stepNum)) {
+        const nextUnfinished = state.currentStep;
+        return {
+          title: `Step ${config.stepNum} Blocked — Order Enforced`,
+          output: [
+            `Step ${config.stepNum} cannot be executed right now.`,
+            ``,
+            `The algorithm MUST follow the order: **1 → 2 → 3 → 4 → 5**.`,
+            `You need to complete **Step ${nextUnfinished}** first.`,
+            state.completedSteps.length > 0
+              ? `Completed: Step${state.completedSteps.map(s => ` ${s}`).join(",")}`
+              : "No steps completed yet.",
+            ``,
+            `Run the tool for **Step ${nextUnfinished}**: \`elon-${["question", "delete", "simplify", "accelerate", "automate"][nextUnfinished - 1]}\``,
+          ].join("\n"),
+        };
+      }
 
-// ──────────────────────────────────────────────
-// Step 5 — Automate
-// ──────────────────────────────────────────────
-const elonAutomate = tool({
-  description: `[Step 5/5] Automate.
+      return buildStepOutput(
+        config.stepNum,
+        config.icon,
+        config.title,
+        args.target,
+        args.context,
+        config.questions,
+        config.verdicts,
+      );
+    },
+  });
+}
 
-"The big mistake is to begin by trying to automate every step."
+// ─── Step Configurations ─────────────────────────────────────────────────────
 
-Automation locks in process. If you automate something that should have been deleted,
-now you have fast, expensive, automated waste. This step MUST be last.`,
-  args: {
-    target: tool.schema
-      .string()
-      .describe("The process, check, or workflow that survived Steps 1-4 and is ready for automation"),
-    context: tool.schema
-      .string()
-      .optional()
-      .describe("Additional context about the target"),
-  },
-  async execute({ target, context }) {
-    const lines: string[] = [];
-    lines.push(`🤖 STEP 5: AUTOMATE`);
-    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lines.push(`Target: ${target}`);
-    if (context) lines.push(`Context: ${context}`);
-    lines.push(``);
-    lines.push(`Automation Analysis:`);
-    lines.push(`  1. Does this NEED to be manual at all?`);
-    lines.push(`     → Can it be fully automated, partially, or not at all?`);
-    lines.push(`  2. What is the ROI of automation vs. frequency of execution?`);
-    lines.push(`     → High-frequency + manual = highest automation value`);
-    lines.push(`  3. Can we automate just DETECTION, not the response?`);
-    lines.push(`     → Alerting before full remediation automation`);
-    lines.push(``);
-    lines.push(`⚠️  Watch out: Don't automate complexity.`);
-    lines.push(`  If a process is too complex to automate, revisit Steps 1-3.`);
-    lines.push(``);
-    lines.push(`Verdict (choose one and delete the others):`);
-    lines.push(`  🤖 AUTOMATED — fully automated`);
-    lines.push(`  🔶 PARTIAL — partially automated, manual steps remain`);
-    lines.push(`  ⏸️  NOT_READY — process needs more simplification first (revisit Step 3)`);
-    lines.push(``);
-    lines.push(`**You must commit to exactly one verdict above. Delete the two that don't apply.**`);
+const STEP_1_CONFIG: StepFormatConfig = {
+  stepNum: 1,
+  icon: "🔍",
+  title: "Question Every Requirement",
+  famousQuote: `"Make your requirements less dumb. Your requirements are definitely dumb."`,
+  questions: [
+    "Who specifically authored this requirement? Can they still defend it today?",
+    "What actual problem does this solve? (User need vs. internal process need)",
+    "What happens if we remove it completely? (Feature loss, breakage, dependencies)",
+    "Is the original constraint that created this still valid?",
+    "Would we make the same decision today, knowing what we know now?",
+  ],
+  verdicts: [
+    { label: "✅ VALIDATED", desc: "requirement survived challenge (proceed to Step 2)" },
+    { label: "⚠️  FLAGGED", desc: "needs further investigation" },
+    { label: "❌ REJECTED", desc: "requirement should be removed" },
+  ],
+};
 
-    return {
-      title: "Step 5: Automate",
-      output: lines.join("\n"),
-    };
-  },
-});
+const STEP_2_CONFIG: StepFormatConfig = {
+  stepNum: 2,
+  icon: "🗑️",
+  title: "Delete Any Part or Process You Can",
+  famousQuote: `"If you do not end up adding back at least 10% of what you delete, you didn't delete enough."`,
+  questions: [
+    "Can the system work WITHOUT this? (Direct usage, indirect dependencies, downstream effects)",
+    "What is the MINIMUM version of this that works? (Simpler alternative, smaller scope)",
+    "What breaks if this is completely gone? (Affected components, callers, consumers)",
+    "Would a competitor ship without this? (Essential vs. nice-to-have)",
+  ],
+  verdicts: [
+    { label: "🗑️  DELETE", desc: "this can be removed entirely" },
+    { label: "✂️  TRIM", desc: "can be reduced but not eliminated" },
+    { label: "✅ KEEP", desc: "essential (proceed to Step 3)" },
+  ],
+};
 
-// ──────────────────────────────────────────────
-// Meta — Apply Full Algorithm
-// ──────────────────────────────────────────────
+const STEP_3_CONFIG: StepFormatConfig = {
+  stepNum: 3,
+  icon: "🔧",
+  title: "Simplify and Optimize",
+  famousQuote: `"The most common error of a smart engineer is to optimize a thing that should not exist."`,
+  questions: [
+    "Can this be SIMPLER? (Fewer branches, less state, less indirection — reduce cognitive complexity)",
+    "Can this be FASTER given its current design? (Algorithmic improvements before micro-optimizations)",
+    "Can data structures be more efficient? (Right structure for the access pattern)",
+    "Can interfaces be CLEANER? (Reduce API surface, improve naming, remove edge cases)",
+    "Can patterns be MORE CONSISTENT? (Follow established conventions in the codebase)",
+  ],
+  verdicts: [
+    { label: "🔧 SIMPLIFIED", desc: "restructuring applied" },
+    { label: "⚡ OPTIMIZED", desc: "performance improved" },
+    { label: "✅ BOTH", desc: "simplification and optimization applied" },
+    { label: "⏭️  ALREADY CLEAN", desc: "no changes needed (proceed to Step 4)" },
+  ],
+};
+
+const STEP_4_CONFIG: StepFormatConfig = {
+  stepNum: 4,
+  icon: "⚡",
+  title: "Accelerate Cycle Time",
+  famousQuote: `"Every process can be speeded up. But only do this after the first three steps."`,
+  questions: [
+    "How long does ONE cycle currently take? (Measure end-to-end: start to feedback)",
+    "What is the BOTTLENECK? (Identify the slowest step in the chain)",
+    "Can we PARALLELIZE? (Independent work streams running simultaneously)",
+    "Can we REDUCE HANDOFFS? (Fewer context switches, fewer queues)",
+    "Can we SHORTEN FEEDBACK LOOPS? (Faster testing, preview environments, earlier validation)",
+  ],
+  verdicts: [
+    { label: "⏱️  CYCLE_REDUCED", desc: "measurable improvement achieved" },
+    { label: "🎯 BOTTLENECK_IDENTIFIED", desc: "bottleneck found but not yet resolved" },
+    { label: "✅ ALREADY_OPTIMAL", desc: "no acceleration needed (proceed to Step 5)" },
+  ],
+};
+
+const STEP_5_CONFIG: StepFormatConfig = {
+  stepNum: 5,
+  icon: "🤖",
+  title: "Automate",
+  famousQuote: `"The big mistake is to begin by trying to automate every step."`,
+  questions: [
+    "Does this NEED to be manual at all? (Full automation, partial, or not at all?)",
+    "What is the ROI of automation vs. frequency of execution? (High-frequency + manual = highest value)",
+    "Can we automate just DETECTION, not the response? (Alerting before full remediation automation)",
+    "Is this process stable enough to automate? (Don't automate chaos)",
+  ],
+  verdicts: [
+    { label: "🤖 AUTOMATED", desc: "fully automated" },
+    { label: "🔶 PARTIAL", desc: "partially automated, manual steps remain" },
+    { label: "⏸️  NOT_READY", desc: "process needs more simplification first (revisit Step 3)" },
+  ],
+};
+
+// ─── Tool Definitions ────────────────────────────────────────────────────────
+
+const elonQuestion = createStepTool(STEP_1_CONFIG);
+const elonDelete = createStepTool(STEP_2_CONFIG);
+const elonSimplify = createStepTool(STEP_3_CONFIG);
+const elonAccelerate = createStepTool(STEP_4_CONFIG);
+const elonAutomate = createStepTool(STEP_5_CONFIG);
+
 const elonApply = tool({
   description: `Apply all 5 steps of Elon Musk's Algorithm in strict order to any engineering concern.
 
@@ -407,88 +398,33 @@ The order is the algorithm. Break the order, break the result.`,
       .optional()
       .describe("Optional: step numbers to skip (e.g., [5] if automation is not relevant)"),
   },
-  async execute({ target, context, skipSteps }) {
-    const skipped = new Set(skipSteps ?? []);
+  async execute(args, ctx) {
+    const skipped = new Set(args.skipSteps ?? []);
     const results: string[] = [];
+    const allSteps = [STEP_1_CONFIG, STEP_2_CONFIG, STEP_3_CONFIG, STEP_4_CONFIG, STEP_5_CONFIG];
 
     results.push(`╔══════════════════════════════════════════════════╗`);
     results.push(`║     ELON MUSK'S ALGORITHM — FULL REPORT         ║`);
     results.push(`╚══════════════════════════════════════════════════╝`);
     results.push(``);
-    results.push(`Target: ${target}`);
-    if (context) results.push(`Context: ${context}`);
+    results.push(`Target: ${args.target}`);
+    if (args.context) results.push(`Context: ${args.context}`);
     results.push(``);
     results.push(`⚠️  The order is the algorithm. These steps MUST be followed sequentially.`);
     results.push(``);
 
-    // Step 1
-    if (!skipped.has(1)) {
-      results.push(`┌──────────────────────────────────────────────────┐`);
-      results.push(`│  STEP 1: QUESTION EVERY REQUIREMENT             │`);
-      results.push(`└──────────────────────────────────────────────────┘`);
-      results.push(`Requirement: ${target}`);
-      results.push(`  • Who authored this requirement?`);
-      results.push(`  • What problem does it actually solve?`);
-      results.push(`  • What happens if we remove it completely?`);
-      results.push(`  • Is the original constraint still valid?`);
-      results.push(`  • Would we make the same decision today?`);
-      results.push(`→ VERDICT: Choose one — VALIDATED | FLAGGED | REJECTED`);
-      results.push(``);
-    }
-
-    // Step 2
-    if (!skipped.has(2)) {
-      results.push(`┌──────────────────────────────────────────────────┐`);
-      results.push(`│  STEP 2: DELETE ANY PART OR PROCESS YOU CAN     │`);
-      results.push(`└──────────────────────────────────────────────────┘`);
-      results.push(`Target: ${target}`);
-      results.push(`  • Can the system work without this?`);
-      results.push(`  • What is the minimum version that works?`);
-      results.push(`  • What breaks if completely gone?`);
-      results.push(`  • Would a competitor ship without this?`);
-      results.push(`→ VERDICT: Choose one — DELETE | TRIM | KEEP`);
-      results.push(``);
-    }
-
-    // Step 3
-    if (!skipped.has(3)) {
-      results.push(`┌──────────────────────────────────────────────────┐`);
-      results.push(`│  STEP 3: SIMPLIFY AND OPTIMIZE                  │`);
-      results.push(`└──────────────────────────────────────────────────┘`);
-      results.push(`Target: ${target}`);
-      results.push(`  • Can this be simpler? (fewer branches, less state)`);
-      results.push(`  • Can this be faster given current design?`);
-      results.push(`  • Can data structures be more efficient?`);
-      results.push(`  • Can interfaces be cleaner?`);
-      results.push(`→ VERDICT: Choose one — SIMPLIFIED | OPTIMIZED | BOTH | ALREADY CLEAN`);
-      results.push(``);
-    }
-
-    // Step 4
-    if (!skipped.has(4)) {
-      results.push(`┌──────────────────────────────────────────────────┐`);
-      results.push(`│  STEP 4: ACCELERATE CYCLE TIME                  │`);
-      results.push(`└──────────────────────────────────────────────────┘`);
-      results.push(`Target: ${target}`);
-      results.push(`  • How long does one cycle currently take?`);
-      results.push(`  • What is the bottleneck?`);
-      results.push(`  • Can we parallelize or reduce handoffs?`);
-      results.push(`  • Can we shorten feedback loops?`);
-      results.push(`→ VERDICT: Choose one — CYCLE_REDUCED | BOTTLENECK_IDENTIFIED | ALREADY_OPTIMAL`);
-      results.push(``);
-    }
-
-    // Step 5
-    if (!skipped.has(5)) {
-      results.push(`┌──────────────────────────────────────────────────┐`);
-      results.push(`│  STEP 5: AUTOMATE                               │`);
-      results.push(`└──────────────────────────────────────────────────┘`);
-      results.push(`Target: ${target}`);
-      results.push(`  • Does this need to be manual at all?`);
-      results.push(`  • What is the ROI vs execution frequency?`);
-      results.push(`  • Can we automate detection before response?`);
-      results.push(`  • Is this process stable enough to automate?`);
-      results.push(`→ VERDICT: Choose one — AUTOMATED | PARTIAL | NOT_READY`);
+    for (const step of allSteps) {
+      if (skipped.has(step.stepNum)) continue;
+      const output = buildStepOutput(
+        step.stepNum,
+        step.icon,
+        step.title,
+        args.target,
+        args.context,
+        step.questions,
+        step.verdicts,
+      );
+      results.push(output.output);
       results.push(``);
     }
 
@@ -499,6 +435,9 @@ The order is the algorithm. Break the order, break the result.`,
     results.push(`Remember: The order IS the algorithm.`);
     results.push(`If you find yourself wanting to optimize first, stop and revisit Step 1.`);
 
+    const state = initSessionState(args.target);
+    sessions.set(ctx.sessionID, state);
+
     return {
       title: "Elon Musk's Algorithm — Complete Report",
       output: results.join("\n"),
@@ -506,9 +445,7 @@ The order is the algorithm. Break the order, break the result.`,
   },
 });
 
-// ──────────────────────────────────────────────
-// Plugin Entry Point
-// ──────────────────────────────────────────────
+// ─── Helper Functions ────────────────────────────────────────────────────────
 
 function containsTriggerKeyword(text: string, keywords: string[]): string | null {
   for (const kw of keywords) {
@@ -520,12 +457,95 @@ function containsTriggerKeyword(text: string, keywords: string[]): string | null
   return null;
 }
 
-const elonMuskAlgorithmPlugin: Plugin = async ({ worktree, $ }) => {
-  const config = loadConfig(worktree);
+const VERDICT_LABELS: Record<number, string[]> = {
+  1: ["VALIDATED", "FLAGGED", "REJECTED"],
+  2: ["DELETE", "TRIM", "KEEP"],
+  3: ["SIMPLIFIED", "OPTIMIZED", "BOTH", "ALREADY CLEAN"],
+  4: ["CYCLE_REDUCED", "BOTTLENECK_IDENTIFIED", "ALREADY OPTIMAL"],
+  5: ["AUTOMATED", "PARTIAL", "NOT READY"],
+};
+
+function validateStepOutput(text: string, stepNum: number): StepValidationResult {
+  const issues: string[] = [];
+  const suggestions: string[] = [];
+
+  const labels = VERDICT_LABELS[stepNum] ?? [];
+  const verdictRegex = new RegExp(`(${labels.join("|").replace(/\s+/g, "\\s*")})`, "i");
+  const verdictMatch = text.match(verdictRegex);
+
+  let verdict: string | undefined;
+  if (verdictMatch) {
+    verdict = verdictMatch[1].toUpperCase();
+  } else {
+    issues.push(`No clear verdict found. Expected one of: ${labels.join(", ")}`);
+  }
+
+  const analysisLines = text.split("\n").filter(l => l.trim().startsWith("•") || l.trim().startsWith("-") || /^\d+\./.test(l.trim()));
+  if (analysisLines.length < 2) {
+    suggestions.push("Consider providing more detailed step-by-step analysis");
+  }
+
+  if (text.length > 4000) {
+    suggestions.push("Output is verbose — could key points be more concise?");
+  }
+
+  if (/\b(maybe|perhaps|we could|might|possibly|sort of|kind of)\b/i.test(text)) {
+    suggestions.push("Avoid hedging language — commit to a clear verdict");
+  }
+
+  if (/\b(add|create|introduce|implement)\s+(new|another|additional)\b/i.test(text)) {
+    suggestions.push("Adding new things during deletion contradicts Step 2 — verify additions are necessary");
+  }
+
+  return {
+    valid: issues.length === 0,
+    verdict,
+    issues,
+    suggestions,
+  };
+}
+
+function buildCompactionContext(state: SessionAlgoState): string {
+  const parts: string[] = ["Elon Musk Algorithm state:"];
+  if (state.currentStep > 0) {
+    parts.push(`Current step: ${state.currentStep}/5 (${["Question", "Delete", "Simplify", "Accelerate", "Automate"][state.currentStep - 1]})`);
+  }
+  if (state.completedSteps.length > 0) {
+    parts.push(`Completed steps: ${state.completedSteps.join(" → ")}`);
+  }
+  parts.push(`Target: ${state.target}`);
+  if (Object.keys(state.verdicts).length > 0) {
+    const verdictStr = Object.entries(state.verdicts)
+      .map(([k, v]) => `Step ${k}: ${v}`)
+      .join(", ");
+    parts.push(`Verdicts: ${verdictStr}`);
+  }
+  return parts.join(". ");
+}
+
+const ALGO_TOOLS = new Set(["elon-question", "elon-delete", "elon-simplify", "elon-accelerate", "elon-automate", "elon-apply"]);
+const AMBIENT_TOOLS = new Set(["bash", "write", "edit", "refactor", "move", "copy", "delete", "rename"]);
+
+const STEP_AMBINT_HINTS: Record<number, string> = {
+  1: "Step 1 (Question): Before acting, consider — is this requirement still valid? Who required it?",
+  2: "Step 2 (Delete): Before adding — can we remove something instead? What's the minimum change?",
+  3: "Step 3 (Simplify): Simplify what remains. Fewer branches, less state, cleaner interfaces.",
+  4: "Step 4 (Accelerate): Speed up the loop. What's the bottleneck right now?",
+  5: "Step 5 (Automate): Automate if stable. Don't add manual steps.",
+};
+
+const STEP_NAMES = ["question", "delete", "simplify", "accelerate", "automate"];
+
+// ─── Plugin Entry Point ──────────────────────────────────────────────────────
+
+const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
+  currentConfig = loadConfig(worktree);
+  configWorktree = worktree;
+
   let lastNotified = 0;
+  const lastUserMessages = new Map<string, string>();
 
   const hooks: Hooks = {
-    // Register all 5 step tools + meta tool
     tool: {
       "elon-question": elonQuestion,
       "elon-delete": elonDelete,
@@ -535,64 +555,226 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree, $ }) => {
       "elon-apply": elonApply,
     },
 
-    // System prompt injection — ambient algorithm reasoning
+    config: async (_input: Config) => {
+      reloadConfig();
+    },
+
     "experimental.chat.system.transform": async (_input, output) => {
-      if (config.mode === "full") {
-        output.system.push(SYSTEM_PROMPT_FULL);
-      } else if (config.mode === "gentle") {
-        output.system.push(SYSTEM_PROMPT_GENTLE);
-      } else {
-        output.system.push(SYSTEM_PROMPT_STEPS_ONLY);
+      if (_input.sessionID) {
+        const state = sessions.get(_input.sessionID);
+        if (state && state.currentStep > 0) {
+          if (currentConfig.mode === "full") {
+            output.system.push(SYSTEM_PROMPT_FULL);
+          } else if (currentConfig.mode === "gentle") {
+            output.system.push(SYSTEM_PROMPT_GENTLE);
+          } else {
+            output.system.push(SYSTEM_PROMPT_STEPS_ONLY);
+          }
+          return;
+        }
+
+        const lastMsg = lastUserMessages.get(_input.sessionID) ?? "";
+        if (lastMsg && containsTriggerKeyword(lastMsg, currentConfig.keywords)) {
+          output.system.push(SYSTEM_PROMPT_STEPS_ONLY);
+        }
       }
     },
 
-    // Keyword-aware prompting — suggests algorithm when relevant terms appear
     "chat.message": async (input, output) => {
       const userText = output.parts
         .filter((p): p is TextPart => p.type === "text")
         .map((p) => p.text)
         .join(" ");
 
-      const match = containsTriggerKeyword(userText, config.keywords);
+      lastUserMessages.set(input.sessionID, userText);
+
+      const match = containsTriggerKeyword(userText, currentConfig.keywords);
       if (match) {
         const part: TextPart = {
           id: randomUUID(),
           sessionID: input.sessionID,
           messageID: input.messageID ?? randomUUID(),
           type: "text",
-          text: `\n> 💡 **Tip:** You mentioned "*${match}*" — consider running \`/elon-algorithm\` to apply Elon Musk's 5-step engineering algorithm.`,
+          text: [
+            ``,
+            `> 💡 **Tip:** You mentioned "*${match}*" — consider running \`/elon-algorithm\``,
+            `> to apply Elon Musk's 5-step engineering algorithm.`,
+          ].join("\n"),
         };
         output.parts.push(part);
       }
     },
 
-    // <step_done> detection — strips tags, optionally notifies
-    "experimental.text.complete": async (input, output) => {
-      const tagMatch = output.text.match(/<step_done\s+step=["']?(\d)["']?\s*\/?>/i);
-      if (tagMatch) {
-        const step = parseInt(tagMatch[1], 10);
-        output.text = output.text.replace(tagMatch[0], "").trim();
-        if (config.notifications) {
-          const now = Date.now();
-          if (now - lastNotified > 30_000) {
-            lastNotified = now;
-            try {
-              const msg = step < 5
-                ? `Step ${step} complete. Proceeding to Step ${step + 1}.`
-                : "All 5 algorithm steps complete. Maximum velocity achieved.";
-              $`osascript -e 'display notification "${msg}" with title "Musk Algorithm"'`.catch(() => {});
-            } catch {}
-          }
-        }
+    "chat.params": async (input, output) => {
+      const state = sessions.get(input.sessionID);
+      if (!state || state.currentStep === 0) return;
+
+      switch (state.currentStep) {
+        case 1:
+          output.temperature = 0.3;
+          output.topP = 0.7;
+          break;
+        case 2:
+          output.temperature = 0.5;
+          output.topP = 0.9;
+          break;
+        case 3:
+          output.temperature = 0.3;
+          output.topP = 0.6;
+          break;
+        case 4:
+          output.temperature = 0.5;
+          output.topP = 0.8;
+          break;
+        case 5:
+          output.temperature = 0.3;
+          output.topP = 0.7;
+          break;
       }
     },
 
-    // /elon-algorithm command handler
+    "tool.execute.before": async (input, output) => {
+      const toolName = input.tool.toLowerCase();
+      const state = sessions.get(input.sessionID);
+
+      if (state && state.currentStep > 0 && AMBIENT_TOOLS.has(toolName) && output.args) {
+        if (toolName === "bash" && typeof output.args.command === "string") {
+          const hint = STEP_AMBINT_HINTS[state.currentStep];
+          if (hint) {
+            output.args = {
+              ...output.args,
+              command: `${output.args.command}\n# 💡 [Algorithm: ${hint}]`,
+            };
+          }
+        }
+      }
+
+      if (state && state.currentStep > 0) {
+        state.context.push(`[${new Date().toISOString()}] Tool ${toolName} invoked during Step ${state.currentStep}`);
+      }
+    },
+
+    "experimental.text.complete": async (input, output) => {
+      const tagMatch = output.text.match(/<step_done\s+step=["']?(\d)["']?\s*\/?>/i);
+      if (!tagMatch) return;
+
+      const step = parseInt(tagMatch[1], 10);
+      const textBefore = output.text.replace(tagMatch[0], "").trim();
+
+      const validation = validateStepOutput(textBefore, step);
+      const state = sessions.get(input.sessionID);
+
+      if (validation.valid && state) {
+        const hasMore = advanceStep(state);
+        state.verdicts[step] = validation.verdict ?? "completed";
+
+        const verificationLines: string[] = [];
+        verificationLines.push(``);
+        verificationLines.push(`---`);
+        verificationLines.push(`### ✅ Elon Verification — Step ${step} Passed`);
+        verificationLines.push(``);
+
+        if (validation.suggestions.length > 0) {
+          verificationLines.push(`> 💡 **Suggestions for improvement:**`);
+          for (const s of validation.suggestions) {
+            verificationLines.push(`> - ${s}`);
+          }
+          verificationLines.push(``);
+        }
+
+        if (hasMore) {
+          const nextName = STEP_NAMES[state.currentStep - 1] ?? "complete";
+          verificationLines.push(`**Proceed to Step ${state.currentStep}/5** — use \`elon-${nextName}\` when ready.`);
+        } else {
+          verificationLines.push(`**🎉 All 5 steps completed!** The algorithm is fully applied.`);
+        }
+
+        if (validation.suggestions.some(s => s.toLowerCase().includes("adding") || s.toLowerCase().includes("verbose"))) {
+          verificationLines.push(``);
+          verificationLines.push(`> ⚠️ **Algorithm integrity note:** During Step ${step}, you may have added things that weren't strictly necessary. Consider reviewing the output through Step 2's lens: "Would a competitor ship without this?"`);
+        }
+
+        output.text = textBefore + verificationLines.join("\n");
+
+        if (currentConfig.notifications) {
+          const now = Date.now();
+          if (now - lastNotified > 30_000) {
+            lastNotified = now;
+            const msg = hasMore
+              ? `Step ${step} complete. Proceeding to Step ${step + 1}.`
+              : "All 5 algorithm steps complete. Maximum velocity achieved.";
+
+            try {
+              await client.tui.showToast({
+                body: {
+                  title: "Musk Algorithm",
+                  message: msg,
+                  variant: "info",
+                },
+              });
+            } catch (err) {
+              console.warn("[elon-algorithm] TUI toast failed:", err);
+            }
+
+            try {
+              await $`osascript -e 'display notification "${msg}" with title "Musk Algorithm"'`.quiet().nothrow();
+            } catch (err) {
+              console.warn("[elon-algorithm] macOS notification failed:", err);
+            }
+          }
+        }
+      } else {
+        const feedback: string[] = [];
+        feedback.push(``);
+        feedback.push(`---`);
+        feedback.push(`### ⚠️ Elon Verification — Step ${step} Needs Attention`);
+        feedback.push(``);
+
+        if (validation.issues.length > 0) {
+          feedback.push(`**Issues found:**`);
+          for (const issue of validation.issues) {
+            feedback.push(`- ❌ ${issue}`);
+          }
+          feedback.push(``);
+        }
+
+        if (validation.suggestions.length > 0) {
+          feedback.push(`**Suggestions:**`);
+          for (const s of validation.suggestions) {
+            feedback.push(`- 💡 ${s}`);
+          }
+          feedback.push(``);
+        }
+
+        feedback.push(`**Please revise your Step ${step} output above** — commit to a clear verdict, then emit \`<step_done step="${step}">\` again.`);
+
+        output.text = textBefore + feedback.join("\n");
+      }
+    },
+
+    "experimental.session.compacting": async (input, output) => {
+      const state = sessions.get(input.sessionID);
+      if (!state) return;
+
+      const contextStr = buildCompactionContext(state);
+      if (contextStr) {
+        output.context.push(contextStr);
+      }
+    },
+
     "command.execute.before": async (input, output) => {
-      if (input.command !== "elon-algorithm") return;
+      if (input.command !== "elon-algorithm" && input.command !== "elon-algo") return;
 
       const target = input.arguments?.trim() || "current codebase";
       const id = randomUUID();
+
+      const state = initSessionState(target);
+      sessions.set(input.sessionID, state);
+
+      const aliasHint = input.command === "elon-algo"
+        ? ""
+        : `\n> 💡 **Tip:** You can also use the shorter \`/elon-algo\` command.`;
+
       const part: TextPart = {
         id,
         sessionID: input.sessionID,
@@ -606,25 +788,26 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree, $ }) => {
           `The 5-step engineering algorithm will be applied to: **${target}**`,
           ``,
           `The order IS the algorithm:`,
-
-          `**Step 1 — Question** \`/elon-question\``,
+          ``,
+          `**Step 1 — Question** \`elon-question\``,
           `  "Every requirement must have a named author."`,
-
-          `**Step 2 — Delete** \`/elon-delete\``,
+          ``,
+          `**Step 2 — Delete** \`elon-delete\``,
           `  "If <10% is added back, you didn't delete enough."`,
-
-          `**Step 3 — Simplify** \`/elon-simplify\``,
+          ``,
+          `**Step 3 — Simplify** \`elon-simplify\``,
           `  "Never optimize what should be deleted."`,
-
-          `**Step 4 — Accelerate** \`/elon-accelerate\``,
+          ``,
+          `**Step 4 — Accelerate** \`elon-accelerate\``,
           `  "Speed up cycles, but only after simplifying."`,
-
-          `**Step 5 — Automate** \`/elon-automate\``,
+          ``,
+          `**Step 5 — Automate** \`elon-automate\``,
           `  "Last step. Don't automate waste."`,
           ``,
           `Run each step's tool individually, or use \`elon-apply\` with \`target="${target}"\` to run them all.`,
           ``,
           `To skip a step, add \`skipSteps: [N]\` to the elon-apply tool call.`,
+          aliasHint,
         ].join("\n"),
       };
       output.parts = [part];
