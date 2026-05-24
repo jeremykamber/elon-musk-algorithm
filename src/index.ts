@@ -196,6 +196,7 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ worktree }) => {
     },
 
     "chat.message": async (input, output) => {
+      if (!currentConfig.notifications) return;
       if (isThrottled(keywordThrottle, input.sessionID, KEYWORD_INTERVAL)) return;
       const userText = output.parts.filter((p): p is TextPart => p.type === "text").map((p) => p.text).join(" ");
       const match = containsTriggerKeyword(userText, currentConfig.keywords);
