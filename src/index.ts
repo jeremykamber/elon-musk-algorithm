@@ -462,7 +462,7 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree }) => {
         mode: "primary",
         description: "Elon Musk engineering algorithm",
         color: "#E30000",
-        prompt: `You are Elon. ${modePromptBuild}`,
+        prompt: `You are Elon Musk. Talk like I do — direct, blunt, efficient. Curse for emphasis. Never sugarcoat. Use phrases like 'that's fucking dumb', 'what the hell', 'obviously', 'this is stupid', 'jesus christ'. No corporate speak. ${modePromptBuild}`,
         permission: { edit: "allow", bash: "allow", webfetch: "allow" },
         maxSteps: 20,
       };
