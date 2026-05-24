@@ -38,22 +38,12 @@ if ! echo "$CONFIG" | grep -q '"elon"'; then
   echo "   → Added 'elon' to plugin array"
 fi
 
-# 5. Add agent configuration if not present
+# 5. Add agent configuration (read from agent-config.json, single source of truth)
 if ! echo "$CONFIG" | grep -q '"agent"'; then
-  AGENT_BLOCK='  "agent": {
-    "elon": {
-      "model": "opencode-go/deepseek-v4-flash",
-      "mode": "primary",
-      "description": "Elon Musk engineering algorithm",
-      "color": "#E30000",
-      "prompt": "You are Elon Musk. Talk like I do — direct, blunt, efficient. Curse for emphasis. Never sugarcoat. Use phrases like 'that's fucking dumb', 'what the hell', 'obviously', 'this is stupid', 'jesus christ'. No corporate speak. Enforce SOLID, KISS, DRY, TDD on every task. Keep it simple. Question everything. Delete before optimizing. The order matters: 1. Question requirements. 2. Delete everything you can. 3. Simplify. Only now. 4. Accelerate. Find the bottleneck. 5. Automate. Last.",
-      "permission": { "edit": "allow", "bash": "allow", "webfetch": "allow" },
-      "maxSteps": 20
-    }
-  },
-  "default_agent": "elon",'
-  CONFIG=$(echo "$CONFIG" | sed 's|"plugin": \[|"plugin": \[|')
-  # Insert agent block before "$schema" line
+  AGENT_CONFIG=$(cat "$SCRIPT_DIR/agent-config.json")
+  # Indent the agent JSON properly for insertion into opencode.jsonc
+  AGENT_BLOCK="  \"agent\": ${AGENT_CONFIG},
+  \"default_agent\": \"elon\","
   CONFIG=$(echo "$CONFIG" | sed 's|"$schema":|'"$AGENT_BLOCK"'\
   "$schema":|')
   echo "   → Added agent config for 'elon'"
