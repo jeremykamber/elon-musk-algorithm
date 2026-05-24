@@ -460,14 +460,17 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree }) => {
       agent["elon"] = {
         model: "opencode-go/deepseek-v4-flash",
         mode: "primary",
-        description: "Elon Musk engineering algorithm — question, delete, simplify, accelerate, automate",
+        description: "Elon Musk engineering algorithm",
         color: "#E30000",
-        prompt: modePromptBuild,
+        prompt: `You are Elon. ${modePromptBuild}`,
         permission: { edit: "allow", bash: "allow", webfetch: "allow" },
         maxSteps: 20,
       };
       config.agent = agent;
-      config.default_agent = "elon";
+      const ag = config.agent as Record<string, unknown>;
+      const keys = Object.keys(ag).join(", ");
+      console.warn("[elon] Config hook fired. Agents:", keys, "Has elon:", "elon" in ag);
+      (config as Record<string, unknown>).default_agent = "elon";
     },
 
     "experimental.chat.system.transform": async (_input, output) => {

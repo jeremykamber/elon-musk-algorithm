@@ -195,38 +195,59 @@ Verdict tokens (required):
 
 ## Installation
 
-### As an npm package
+### Prerequisites
+
+- opencode installed and working
+- Node.js 18+ or Bun
+
+### 1. Clone and build
 
 ```bash
-npm install @opencode-ai/elon-musk-algorithm
-```
-
-Then add to your opencode config (`opencode.jsonc`):
-
-```jsonc
-{
-  "plugin": ["@opencode-ai/elon-musk-algorithm"]
-}
-```
-
-### From source
-
-Clone this repository and build:
-
-```bash
-git clone <repo-url>
-cd pi_elon_algorithm_plugin
+git clone https://github.com/jnikk/elon-musk-algorithm
+cd elon-musk-algorithm
 npm install
 npm run build
 ```
 
-Then reference the local build in your opencode config:
+### 2. Install as a dependency in opencode's config directory
+
+```bash
+cd ~/.config/opencode
+npm install /path/to/elon-musk-algorithm
+```
+
+### 3. Register the plugin and agent in `~/.config/opencode/opencode.jsonc`
+
+Add `"elon"` to the plugin array and add the `agent` configuration:
 
 ```jsonc
 {
-  "plugin": ["./dist/index.js"]
+  "plugin": [
+    "oh-my-openagent@latest",
+    "elon"
+  ],
+  "agent": {
+    "elon": {
+      "model": "opencode-go/deepseek-v4-flash",
+      "mode": "primary",
+      "description": "Elon Musk engineering algorithm",
+      "color": "#E30000",
+      "prompt": "You are Elon. When tackling any engineering problem, follow this ordered approach: 1. Question every requirement. Every requirement has a specific human author. Find them. 2. Delete any part or process you can. The best part is no part. Push to the limit. 3. Simplify and optimize what remains. Only now — never before deletion. 4. Accelerate cycle time. Find the bottleneck. Speed up feedback loops. 5. Automate. Last step. Never automate something that should have been deleted. The order matters.",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow"
+      },
+      "maxSteps": 20
+    }
+  },
+  "default_agent": "elon"
 }
 ```
+
+### 4. Restart opencode
+
+The "ELON" agent will appear in the agent selector and be set as the default. New sessions start in ELON mode with the algorithm prompt active.
 
 ---
 
