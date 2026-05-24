@@ -234,28 +234,17 @@ Then reference the local build in your opencode config:
 
 ### Custom Tools
 
-The plugin registers 6 tools that appear alongside opencode's built-in tools. The AI agent can call them directly.
+The plugin registers 7 tools that appear alongside opencode's built-in tools. The AI agent can call them directly. Each step tool forces a **concrete verdict** — no open checkboxes.
 
-| Tool | Step | Purpose |
-|------|------|---------|
-| `elon-question` | 1 | Challenge any requirement, identify its author, question its necessity |
-| `elon-delete` | 2 | Evaluate a component for deletion, apply the 10% rule |
-| `elon-simplify` | 3 | Simplify and optimize what survived deletion |
-| `elon-accelerate` | 4 | Analyze and accelerate cycle times |
-| `elon-automate` | 5 | Determine what to automate and how |
-| `elon-apply` | All | Run all 5 steps in sequence against a target |
-
-**Using `elon-apply` with step skipping:**
-
-```json
-{
-  "target": "refactor the CI/CD pipeline",
-  "context": "Deploying takes 45 minutes across 8 stages",
-  "skipSteps": [5]
-}
-```
-
-This runs Steps 1-4 but skips Step 5 (automation) — useful when you want to question, delete, simplify, and accelerate without committing to automation.
+| Tool | Step | Verdicts | Purpose |
+|------|------|----------|---------|
+| `elon-question` | 1 | `VALIDATED` `FLAGGED` `REJECTED` | Challenge a requirement, identify its human author, force a verdict |
+| `elon-delete` | 2 | `DELETE` `TRIM` `KEEP` | Evaluate a component for deletion — the best part is no part |
+| `elon-simplify` | 3 | `SIMPLIFIED` `OPTIMIZED` `UNCHANGED` | Simplify and optimize what survived deletion |
+| `elon-accelerate` | 4 | `BOTTLENECK_FOUND` `CYCLE_IMPROVED` `NO_CHANGE` | Find the bottleneck and accelerate cycle time |
+| `elon-automate` | 5 | `AUTOMATED` `MANUAL_OK` `NOT_READY` | Automate only after steps 1-4; never automate bloat |
+| `elon-debt-index` | — | Ratio | Technical debt index: current / essential complexity |
+| `elon-apply` | All | Combined | Run all 5 steps at once — produce verdicts for each step against a target |
 
 ### Slash Commands
 

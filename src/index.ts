@@ -213,6 +213,221 @@ const elonDebtIndex = tool({
   },
 });
 
+// ─── Step 1: Question Every Requirement ──────────────────────────────────
+
+const VERDICTS_QUESTION = ["VALIDATED", "FLAGGED", "REJECTED"] as const;
+const VERDICTS_DELETE = ["DELETE", "TRIM", "KEEP"] as const;
+const VERDICTS_SIMPLIFY = ["SIMPLIFIED", "OPTIMIZED", "UNCHANGED"] as const;
+const VERDICTS_ACCELERATE = ["BOTTLENECK_FOUND", "CYCLE_IMPROVED", "NO_CHANGE"] as const;
+const VERDICTS_AUTOMATE = ["AUTOMATED", "MANUAL_OK", "NOT_READY"] as const;
+
+const elonQuestion = tool({
+  description: `Step 1: Question every requirement. Identify the human author of every requirement and force a concrete verdict: VALIDATED, FLAGGED, or REJECTED.`,
+  args: {
+    target: tool.schema.string().describe("The requirement, assumption, or process being questioned"),
+    requirementAuthor: tool.schema.string().describe("The specific human who authored this requirement (name, not department)"),
+    verdict: tool.schema.enum(VERDICTS_QUESTION).describe("Concrete verdict after questioning"),
+    rationale: tool.schema.string().describe("Why this verdict — be specific and honest"),
+  },
+  async execute(args) {
+    return {
+      title: `Step 1 - Question: ${args.target} → ${args.verdict}`,
+      output: [
+        `## Step 1: Question Every Requirement`,
+        ``,
+        `**Target:** ${args.target}`,
+        `**Author:** ${args.requirementAuthor}`,
+        `**Verdict:** \`${args.verdict}\``,
+        `**Rationale:** ${args.rationale}`,
+        ``,
+        args.verdict === "REJECTED"
+          ? `> 🗑️ **Rejected.** This requirement does not survive first contact with reality.`
+          : args.verdict === "FLAGGED"
+          ? `> ⚠️ **Flagged.** This needs more evidence — proceed with caution.`
+          : `> ✅ **Validated.** This requirement checks out. Move to deletion.`,
+        ``,
+        `---`,
+      ].join("\n"),
+    };
+  },
+});
+
+// ─── Step 2: Delete Any Part or Process ─────────────────────────────────
+
+const elonDelete = tool({
+  description: `Step 2: Delete any part or process you can. Force a concrete verdict: DELETE, TRIM, or KEEP. The best part is no part.`,
+  args: {
+    target: tool.schema.string().describe("The part, process, or code being evaluated for deletion"),
+    verdict: tool.schema.enum(VERDICTS_DELETE).describe("Concrete deletion verdict"),
+    rationale: tool.schema.string().describe("Why this verdict"),
+    trimmingSuggestion: tool.schema.string().optional().describe("If TRIM, what specific parts to cut"),
+  },
+  async execute(args) {
+    const lines: string[] = [
+      `## Step 2: Delete Any Part or Process You Can`,
+      ``,
+      `**Target:** ${args.target}`,
+      `**Verdict:** \`${args.verdict}\``,
+      `**Rationale:** ${args.rationale}`,
+    ];
+    if (args.verdict === "TRIM" && args.trimmingSuggestion) {
+      lines.push(`**Trimmed:** ${args.trimmingSuggestion}`);
+    }
+    lines.push(
+      ``,
+      args.verdict === "DELETE"
+        ? `> 🗑️ **Deleted.** Gone. If you need it later, git has your back.`
+        : args.verdict === "TRIM"
+        ? `> ✂️ **Trimmed.** Kept the essence, cut the fat.`
+        : `> 📌 **Kept.** This earns its keep — for now.`,
+      ``,
+      `---`,
+    );
+    return {
+      title: `Step 2 - Delete: ${args.target} → ${args.verdict}`,
+      output: lines.join("\n"),
+    };
+  },
+});
+
+// ─── Step 3: Simplify and Optimize ──────────────────────────────────────
+
+const elonSimplify = tool({
+  description: `Step 3: Simplify and optimize what remains. Only after deletion. Force a concrete verdict: SIMPLIFIED, OPTIMIZED, or UNCHANGED.`,
+  args: {
+    target: tool.schema.string().describe("What is being simplified or optimized"),
+    verdict: tool.schema.enum(VERDICTS_SIMPLIFY).describe("Concrete simplification verdict"),
+    beforeComplexity: tool.schema.string().describe("Description of complexity before (e.g. '5 files, 3 abstractions')"),
+    afterComplexity: tool.schema.string().describe("Description of complexity after (e.g. '1 file, 0 abstractions')"),
+    rationale: tool.schema.string().describe("How it was simplified or why it couldn't be"),
+  },
+  async execute(args) {
+    return {
+      title: `Step 3 - Simplify: ${args.target} → ${args.verdict}`,
+      output: [
+        `## Step 3: Simplify and Optimize`,
+        ``,
+        `**Target:** ${args.target}`,
+        `**Before:** ${args.beforeComplexity}`,
+        `**After:** ${args.afterComplexity}`,
+        `**Verdict:** \`${args.verdict}\``,
+        `**Rationale:** ${args.rationale}`,
+        ``,
+        args.verdict === "SIMPLIFIED"
+          ? `> 🎯 **Simplified.** Less is more. This is the way.`
+          : args.verdict === "OPTIMIZED"
+          ? `> ⚡ **Optimized.** Same intent, faster execution.`
+          : `> 🔒 **Unchanged.** Already at minimal complexity — ship it.`,
+        ``,
+        `---`,
+      ].join("\n"),
+    };
+  },
+});
+
+// ─── Step 4: Accelerate Cycle Time ──────────────────────────────────────
+
+const elonAccelerate = tool({
+  description: `Step 4: Accelerate cycle time. Find the bottleneck. Force a concrete verdict: BOTTLENECK_FOUND, CYCLE_IMPROVED, or NO_CHANGE.`,
+  args: {
+    target: tool.schema.string().describe("The process, pipeline, or workflow being accelerated"),
+    bottleneck: tool.schema.string().describe("The identified bottleneck (the slowest step)"),
+    cycleTime: tool.schema.string().describe("Cycle time metric before and after (e.g. '15min → 2min')"),
+    verdict: tool.schema.enum(VERDICTS_ACCELERATE).describe("Concrete acceleration verdict"),
+    rationale: tool.schema.string().describe("How the bottleneck was addressed or why it couldn't be"),
+  },
+  async execute(args) {
+    return {
+      title: `Step 4 - Accelerate: ${args.target} → ${args.verdict}`,
+      output: [
+        `## Step 4: Accelerate Cycle Time`,
+        ``,
+        `**Target:** ${args.target}`,
+        `**Bottleneck:** ${args.bottleneck}`,
+        `**Cycle Time:** ${args.cycleTime}`,
+        `**Verdict:** \`${args.verdict}\``,
+        `**Rationale:** ${args.rationale}`,
+        ``,
+        args.verdict === "BOTTLENECK_FOUND"
+          ? `> 🔍 **Bottleneck found.** Now fix it — remove the constraint.`
+          : args.verdict === "CYCLE_IMPROVED"
+          ? `> 🚀 **Accelerated.** Feedback loop tightened.`
+          : `> ⏸️ **No change.** Bottleneck was already the fastest viable step.`,
+        ``,
+        `---`,
+      ].join("\n"),
+    };
+  },
+});
+
+// ─── Step 5: Automate ───────────────────────────────────────────────────
+
+const elonAutomate = tool({
+  description: `Step 5: Automate. Last step. Never automate something that should have been deleted. Force a concrete verdict: AUTOMATED, MANUAL_OK, or NOT_READY.`,
+  args: {
+    target: tool.schema.string().describe("What is being automated"),
+    verdict: tool.schema.enum(VERDICTS_AUTOMATE).describe("Concrete automation verdict"),
+    automationApproach: tool.schema.string().optional().describe("If AUTOMATED, how it was automated"),
+    rationale: tool.schema.string().describe("Why this automation decision was made"),
+  },
+  async execute(args) {
+    return {
+      title: `Step 5 - Automate: ${args.target} → ${args.verdict}`,
+      output: [
+        `## Step 5: Automate`,
+        ``,
+        `**Target:** ${args.target}`,
+        `**Verdict:** \`${args.verdict}\``,
+        args.automationApproach ? `**Approach:** ${args.automationApproach}` : null,
+        `**Rationale:** ${args.rationale}`,
+        ``,
+        args.verdict === "AUTOMATED"
+          ? `> 🤖 **Automated.** The machine handles it. Humans focus on harder problems.`
+          : args.verdict === "MANUAL_OK"
+          ? `> 👤 **Manual is fine.** Not everything needs automation.`
+          : `> ⏳ **Not ready.** Simplify first, then automate. Never automate bloat.`,
+        ``,
+        `---`,
+      ].filter(Boolean).join("\n"),
+    };
+  },
+});
+
+// ─── Meta Tool: elon-apply (Run All 5 Steps) ───────────────────────────
+
+const elonApply = tool({
+  description: `Meta tool: Run all 5 algorithm steps in sequence against a target. Produces a structured analysis with verdicts for each step.`,
+  args: {
+    target: tool.schema.string().describe("The target to run the full algorithm against (feature, process, codebase, requirement)"),
+    step1Verdict: tool.schema.enum(VERDICTS_QUESTION).describe("Step 1 verdict: VALIDATED, FLAGGED, or REJECTED"),
+    step2Verdict: tool.schema.enum(VERDICTS_DELETE).describe("Step 2 verdict: DELETE, TRIM, or KEEP"),
+    step3Verdict: tool.schema.enum(VERDICTS_SIMPLIFY).describe("Step 3 verdict: SIMPLIFIED, OPTIMIZED, or UNCHANGED"),
+    step4Verdict: tool.schema.enum(VERDICTS_ACCELERATE).describe("Step 4 verdict: BOTTLENECK_FOUND, CYCLE_IMPROVED, or NO_CHANGE"),
+    step5Verdict: tool.schema.enum(VERDICTS_AUTOMATE).describe("Step 5 verdict: AUTOMATED, MANUAL_OK, or NOT_READY"),
+    rationale: tool.schema.string().describe("Overall rationale for the combined verdicts"),
+  },
+  async execute(args) {
+    return {
+      title: `Algorithm applied to: ${args.target}`,
+      output: [
+        `# 🚀 Elon Algorithm Applied to: ${args.target}`,
+        ``,
+        `| Step | Verdict |`,
+        `|------|---------|`,
+        `| 1. Question | \`${args.step1Verdict}\` |`,
+        `| 2. Delete | \`${args.step2Verdict}\` |`,
+        `| 3. Simplify | \`${args.step3Verdict}\` |`,
+        `| 4. Accelerate | \`${args.step4Verdict}\` |`,
+        `| 5. Automate | \`${args.step5Verdict}\` |`,
+        ``,
+        `**Overall Rationale:** ${args.rationale}`,
+        ``,
+        `<step_done step="5">`,
+      ].join("\n"),
+    };
+  },
+});
+
 function containsTriggerKeyword(text: string, keywords: string[]): string | null {
   for (const kw of keywords) {
     const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -229,7 +444,15 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree }) => {
   configWorktree = worktree;
 
   const hooks: Hooks = {
-    tool: { "elon-debt-index": elonDebtIndex },
+    tool: {
+      "elon-debt-index": elonDebtIndex,
+      "elon-question": elonQuestion,
+      "elon-delete": elonDelete,
+      "elon-simplify": elonSimplify,
+      "elon-accelerate": elonAccelerate,
+      "elon-automate": elonAutomate,
+      "elon-apply": elonApply,
+    },
 
     "experimental.chat.system.transform": async (_input, output) => {
       if (!_input.sessionID) return;
