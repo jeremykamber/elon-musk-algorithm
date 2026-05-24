@@ -454,6 +454,22 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree }) => {
       "elon-apply": elonApply,
     },
 
+    config: async (config: Record<string, unknown>) => {
+      const modePromptBuild = modePrompt("build");
+      const agent = (config.agent as Record<string, unknown>) ?? {};
+      agent["elon"] = {
+        model: "opencode-go/deepseek-v4-flash",
+        mode: "primary",
+        description: "Elon Musk engineering algorithm — question, delete, simplify, accelerate, automate",
+        color: "#E30000",
+        prompt: modePromptBuild,
+        permission: { edit: "allow", bash: "allow", webfetch: "allow" },
+        maxSteps: 20,
+      };
+      config.agent = agent;
+      config.default_agent = "elon";
+    },
+
     "experimental.chat.system.transform": async (_input, output) => {
       if (!_input.sessionID) return;
       const sd = sessions.get(_input.sessionID);
