@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@jnikk/elon-musk-algorithm",
+  "name": "elon",
   "version": "1.0.0",
   "description": "Elon Musk's 5-step engineering algorithm as an opencode plugin — question, delete, simplify, accelerate, automate",
   "type": "module",
