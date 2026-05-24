@@ -1,5 +1,6 @@
 import type { Plugin, Hooks, Config } from "@opencode-ai/plugin";
 import type { TextPart, Part } from "@opencode-ai/sdk";
+import type { OpencodeClient } from "@opencode-ai/sdk/client";
 import { tool } from "@opencode-ai/plugin/tool";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
@@ -25,7 +26,6 @@ interface SessionAlgoState {
   context: string[];
   activatedAt: number;
   blockers: BlockerEntry[];
-  analysisSessionIds: string[];
 }
 
 interface StepFormatConfig {
@@ -171,7 +171,6 @@ function initSessionState(target: string): SessionAlgoState {
     context: [],
     activatedAt: Date.now(),
     blockers: [],
-    analysisSessionIds: [],
   };
 }
 
@@ -565,26 +564,26 @@ function buildSubagentPrompt(stepOutput: string, stepNum: number, target: string
 
 // ─── Analysis Session Management ──────────────────────────────────────────
 
-async function createAnalysisSession(client: any, parentSessionId: string): Promise<string | null> {
+async function createAnalysisSession(client: OpencodeClient, parentSessionId: string): Promise<string | null> {
   try {
-    const created = await client.session.create({ parentID: parentSessionId });
-    return created?.info?.id ?? null;
+    const created = await client.session.create({ body: { parentID: parentSessionId } });
+    return (created as any)?.id ?? null;
   } catch (err) {
     console.warn("[elon-algorithm] Failed to create analysis session:", err);
     return null;
   }
 }
 
-async function deleteAnalysisSession(client: any, sessionId: string): Promise<void> {
+async function deleteAnalysisSession(client: OpencodeClient, sessionId: string): Promise<void> {
   try {
-    await client.session.delete({ sessionID: sessionId });
+    await client.session.delete({ path: { id: sessionId } });
   } catch (err) {
     console.warn("[elon-algorithm] Failed to delete analysis session:", err);
   }
 }
 
 async function runLLMSubagents(
-  client: any, text: string, stepNum: number, target: string,
+  client: OpencodeClient, text: string, stepNum: number, target: string,
 ): Promise<{ findings: LLMSubagentFinding[]; hadFailure: boolean }> {
   const analysisSessionId = await createAnalysisSession(client, "analysis-placeholder");
   if (!analysisSessionId) {
@@ -593,19 +592,19 @@ async function runLLMSubagents(
 
   try {
     const prompt = buildSubagentPrompt(text, stepNum, target);
-    const result = await client.session.prompt({ body: { parts: [{ type: "text", text: prompt }] }, path: { sessionID: analysisSessionId } });
-    const responseText = result?.parts?.map((p: Part) => (p as TextPart).text).filter(Boolean).join("\n") ?? "";
+    const result = await client.session.prompt({ body: { parts: [{ type: "text" as const, text: prompt }] }, path: { id: analysisSessionId } });
+    const responseText = (result as any)?.parts?.map((p: Part) => (p as TextPart).text).filter(Boolean).join("\n") ?? "";
     const findings = parseSubagentFindings(responseText);
     await deleteAnalysisSession(client, analysisSessionId);
     return { findings, hadFailure: false };
   } catch (err) {
     console.warn("[elon-algorithm] LLM subagent analysis failed:", err);
-    await deleteAnalysisSession(client, analysisSessionId).catch(() => {});
+    try { await deleteAnalysisSession(client, analysisSessionId); } catch {}
     return { findings: parseSubagentFindings(""), hadFailure: true };
   }
 }
 
-async function runLLMCodeReview(client: any, code: string, filename: string | undefined): Promise<string | null> {
+async function runLLMCodeReview(client: OpencodeClient, code: string, filename: string | undefined): Promise<string | null> {
   const fileInfo = filename ? `File: ${filename}\n\n` : "";
   const prompt = `Review this code for simplification opportunities using Elon Musk's engineering principles:
 
@@ -628,8 +627,8 @@ Wrap in \`\`\`json code block.`;
   if (!analysisSessionId) return null;
 
   try {
-    const result = await client.session.prompt({ body: { parts: [{ type: "text", text: prompt }] }, path: { sessionID: analysisSessionId } });
-    const responseText = result?.parts?.map((p: Part) => (p as TextPart).text).filter(Boolean).join("\n") ?? "";
+    const result = await client.session.prompt({ body: { parts: [{ type: "text" as const, text: prompt }] }, path: { id: analysisSessionId } });
+    const responseText = (result as any)?.parts?.map((p: Part) => (p as TextPart).text).filter(Boolean).join("\n") ?? "";
     await deleteAnalysisSession(client, analysisSessionId);
     const jsonBlock = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
     if (jsonBlock) {
@@ -648,7 +647,7 @@ Wrap in \`\`\`json code block.`;
     return null;
   } catch (err) {
     console.warn("[elon-algorithm] LLM code review failed:", err);
-    await deleteAnalysisSession(client, analysisSessionId).catch(() => {});
+    try { await deleteAnalysisSession(client, analysisSessionId); } catch {}
     return null;
   }
 }
@@ -777,16 +776,16 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
     },
 
     "permission.ask": async (input, output) => {
-      const toolName = (input as any).tool ?? (input as any).toolID ?? "";
+      const permInput = input as unknown as { tool?: string; toolID?: string; sessionID?: string };
+      const toolName = permInput.tool ?? permInput.toolID ?? "";
       if (ALGO_TOOLS.has(toolName)) return;
-      const sessionID = (input as any).sessionID ?? "";
+      const sessionID = permInput.sessionID ?? "";
       if (!sessionID) return;
       const state = sessions.get(sessionID);
       if (!state || state.blockers.length === 0) return;
 
       output.status = "deny";
-      const blockerReasons = state.blockers.map(b => `🔴 ${b.subagent}: ${b.reason}`).join("\n");
-      console.warn(`[elon-algorithm] Blocked tool ${toolName} due to blockers:\n${blockerReasons}`);
+      console.warn(`[elon-algorithm] Blocked tool ${toolName} due to ${state.blockers.length} blocker(s)`);
     },
 
     "tool.execute.before": async (input, output) => {
@@ -833,13 +832,19 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
       const state = sessions.get(input.sessionID);
 
       if (validation.valid && state) {
+        const prevStep = state.currentStep;
+        const prevCompleted = [...state.completedSteps];
         const hasMore = advanceStep(state);
         state.verdicts[step] = validation.verdict ?? "completed";
 
         const { findings: subagentFindings, hadFailure } = await runLLMSubagents(client, textBefore, step, state.target);
 
         const criticalFailures = subagentFindings.filter(f => !f.passed && f.severity === "critical");
-        if (criticalFailures.length > 0) {
+        const blocked = criticalFailures.length > 0;
+
+        if (blocked) {
+          state.currentStep = prevStep;
+          state.completedSteps = prevCompleted;
           state.blockers.push(...criticalFailures.map(f => ({
             subagent: f.subagent, reason: f.reasoning, step,
           })));
@@ -872,11 +877,9 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
           }
         }
 
-        if (criticalFailures.length > 0) {
+        if (blocked) {
           verificationLines.push(``);
           verificationLines.push(`> 🚫 **${criticalFailures.length} critical issue(s) BLOCKING progress.** Address them above, then run \`/elon-clear-blockers\` after fixing.`);
-          state.currentStep = state.currentStep - 1;
-          state.completedSteps.pop();
         } else if (hasMore) {
           const nextName = STEP_NAMES[state.currentStep - 1] ?? "complete";
           verificationLines.push(`\n**Proceed to Step ${state.currentStep}/5** — use \`elon-${nextName}\` when ready.`);
@@ -891,8 +894,16 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
           if (now - lastNotified > 30_000) {
             lastNotified = now;
             const msg = hasMore ? `Step ${step} complete. Step ${step + 1} ready.` : "All 5 steps complete.";
-            try { await (client as any).tui.showToast({ body: { title: "Musk Algorithm", message: msg, variant: "info" } }); } catch {}
-            try { await $`osascript -e 'display notification "${msg}" with title "Musk Algorithm"'`.quiet().nothrow(); } catch {}
+            try {
+              await (client.tui as any).showToast({ body: { title: "Musk Algorithm", message: msg, variant: "info" as const } });
+            } catch (err) {
+              console.warn("[elon-algorithm] Toast failed:", err);
+            }
+            try {
+              await $`osascript -e 'display notification "${msg}" with title "Musk Algorithm"'`.quiet().nothrow();
+            } catch (err) {
+              console.warn("[elon-algorithm] macOS notification failed:", err);
+            }
           }
         }
       } else {
