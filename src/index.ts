@@ -1012,6 +1012,184 @@ function formatSubagentReview(findings: SubagentFinding[]): string[] {
   return lines;
 }
 
+// ─── Code Simplification Analyzer ────────────────────────────────────────────
+
+interface SimplifyFinding {
+  severity: "info" | "warning" | "critical";
+  icon: string;
+  category: string;
+  detail: string;
+  lineRef?: number;
+}
+
+const IMPLEMENT_TOOLS = new Set(["write", "edit", "refactor"]);
+
+function analyzeCodeForSimplification(code: string, filename?: string): SimplifyFinding[] {
+  const findings: SimplifyFinding[] = [];
+  const lines = code.split("\n");
+  const totalLines = lines.length;
+
+  if (totalLines > 200) {
+    findings.push({
+      severity: "warning",
+      icon: "📏",
+      category: "File Length",
+      detail: `File is ${totalLines} lines. Long files hide complexity. Could this be split or simplified?`,
+    });
+  }
+
+  let maxIndent = 0;
+  for (const line of lines) {
+    const indent = line.search(/\S/);
+    if (indent > maxIndent) maxIndent = indent;
+  }
+  if (maxIndent > 24) {
+    findings.push({
+      severity: "critical",
+      icon: "🪺",
+      category: "Nesting Depth",
+      detail: `Code indentation reaches depth ${maxIndent / 2} levels. Deeply nested code is fragile and hard to follow. Extract early returns or helper functions.`,
+    });
+  } else if (maxIndent > 16) {
+    findings.push({
+      severity: "warning",
+      icon: "🪺",
+      category: "Nesting Depth",
+      detail: `Code indentation reaches depth ${maxIndent / 2} levels. Consider reducing nesting with guard clauses or extracting functions.`,
+    });
+  }
+
+  const conditionalCount = (code.match(/\bif\s*\(/g) || []).length +
+    (code.match(/\belse\s+if\b/g) || []).length +
+    (code.match(/\bswitch\s*\(/g) || []).length +
+    (code.match(/\?\s*\w+\s*:/g) || []).length;
+  const conditionalRatio = totalLines > 0 ? conditionalCount / totalLines : 0;
+  if (conditionalRatio > 0.2) {
+    findings.push({
+      severity: "warning",
+      icon: "🔀",
+      category: "Conditionals",
+      detail: `${conditionalCount} conditionals in ${totalLines} lines (${Math.round(conditionalRatio * 100)}%). Over 20% conditional density means fragile logic. Can any be eliminated?`,
+    });
+  }
+
+  const oneLineWrapperCount = (code.match(/return\s+\w+\([\s\S]*?\)\s*;/g) || []).length +
+    (code.match(/^\s*\w+\s*=\s*\w+\.\w+\([\s\S]*?\)\s*$/gm) || []).length;
+  if (oneLineWrapperCount > 5) {
+    findings.push({
+      severity: "info",
+      icon: "🔄",
+      category: "Indirection",
+      detail: `${oneLineWrapperCount} one-line wrappers detected. Each wrapper adds fragility without value. Can they be inlined?`,
+    });
+  }
+
+  const funcMatches = code.matchAll(/(?:function\s+\w+|=>\s*{|\)\s*:\s*\w+\s*=>|\w+\s*\([^)]*\)\s*\{)/g);
+  const funcCount = [...funcMatches].length;
+  if (totalLines > 50 && funcCount === 0) {
+    findings.push({
+      severity: "warning",
+      icon: "📋",
+      category: "Function Decomposition",
+      detail: `No functions detected in ${totalLines} lines. Monolithic code is impossible to simplify piece by piece. Break it down.`,
+    });
+  }
+  if (funcCount > 20 && totalLines < 300) {
+    findings.push({
+      severity: "info",
+      icon: "📋",
+      category: "Function Count",
+      detail: `${funcCount} functions in ${totalLines} lines. High function density may indicate over-abstraction. Could some be merged?`,
+    });
+  }
+
+  const complexityPatterns = [
+    { pattern: /\b(abstract|interface|generic|overrid|polymorph|factory|singleton|decorator|observer|strategy)\b/gi, label: "Design Patterns" },
+    { pattern: /\b(as\s+any|@ts-ignore|@ts-expect-error|any\s*\()/g, label: "Type Escapes" },
+    { pattern: /\b(forEach|map|filter|reduce)\s*\([^)]*\)\s*\.\s*(forEach|map|filter|reduce)/g, label: "Chain Length" },
+    { pattern: /\btry\s*\{[^}]*\}\s*catch\s*\(\w*\)\s*\{\s*\}/g, label: "Empty Catch" },
+    { pattern: /\bTODO|FIXME|HACK|XXX|WORKAROUND|TEMPORARY|HARDCODED\b/gi, label: "Technical Debt" },
+  ];
+
+  for (const { pattern, label } of complexityPatterns) {
+    const matches = code.match(pattern);
+    if (matches && matches.length > 2) {
+      findings.push({
+        severity: "warning",
+        icon: "🏗️",
+        category: label,
+        detail: `${matches.length} instances of ${label.toLowerCase()} found. Each adds fragility. Question whether each one is necessary.`,
+      });
+    } else if (matches && matches.length > 0) {
+      findings.push({
+        severity: "info",
+        icon: "🏗️",
+        category: label,
+        detail: `${matches.length} instance(s) of ${label.toLowerCase()}. Worth reviewing.`,
+      });
+    }
+  }
+
+  const commentExplanations = (code.match(/\/\/\s*(complex|tricky|hack|ugly|mess|confusing|careful|don't touch|magic|workaround)/gi) || []).length;
+  if (commentExplanations > 0) {
+    findings.push({
+      severity: "warning",
+      icon: "💬",
+      category: "Self-Identified Complexity",
+      detail: `${commentExplanations} comments admit complexity. If the author knew it was complex, it should have been simplified before shipping.`,
+    });
+  }
+
+  return findings;
+}
+
+function simplifyCodeToOutput(code: string, filename: string | undefined): string | null {
+  const findings = analyzeCodeForSimplification(code, filename);
+  if (findings.length === 0) return null;
+
+  const lines: string[] = [];
+  lines.push(``);
+  lines.push(`---`);
+  lines.push(`### 🔬 Code Simplification Subagent Review`);
+  lines.push(``);
+  lines.push(`> *Elon's approach: find what's fragile, delete what's unnecessary, simplify what remains.*`);
+  lines.push(``);
+
+  const critical = findings.filter(f => f.severity === "critical");
+  const warnings = findings.filter(f => f.severity === "warning");
+  const infos = findings.filter(f => f.severity === "info");
+
+  if (critical.length > 0) {
+    lines.push(`**🔴 Critical Issues:**`);
+    for (const f of critical) {
+      lines.push(`- ${f.icon} **${f.category}:** ${f.detail}`);
+      lines.push(`  → This needs to be fixed. Fragile code WILL break.`);
+    }
+    lines.push(``);
+  }
+
+  if (warnings.length > 0) {
+    lines.push(`**🟡 Simplification Opportunities:**`);
+    for (const f of warnings) {
+      lines.push(`- ${f.icon} **${f.category}:** ${f.detail}`);
+    }
+    lines.push(``);
+  }
+
+  if (infos.length > 0) {
+    lines.push(`**🔵 Review Notes:**`);
+    for (const f of infos) {
+      lines.push(`- ${f.icon} **${f.category}:** ${f.detail}`);
+    }
+    lines.push(``);
+  }
+
+  lines.push(`**Next step:** Run \`elon-delete\` on this implementation. Question every function. Delete what you can. Simplify what remains.`);
+  lines.push(`"We are on a deletion rampage. Nothing is sacred." — Elon Musk`);
+
+  return lines.join("\n");
+}
+
 const ALGO_TOOLS = new Set(["elon-question", "elon-delete", "elon-simplify", "elon-accelerate", "elon-automate", "elon-apply", "elon-idiot-index"]);
 const AMBIENT_TOOLS = new Set(["bash", "write", "edit", "refactor", "move", "copy", "delete", "rename"]);
 
@@ -1141,6 +1319,20 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
 
       if (state && state.currentStep > 0) {
         state.context.push(`[${new Date().toISOString()}] Tool ${toolName} invoked during Step ${state.currentStep}`);
+      }
+    },
+
+    "tool.execute.after": async (input, output) => {
+      const toolName = input.tool.toLowerCase();
+      if (!IMPLEMENT_TOOLS.has(toolName)) return;
+
+      const code = input.args?.content ?? input.args?.newString ?? null;
+      if (!code || typeof code !== "string" || code.length < 50) return;
+
+      const filename = input.args?.filePath ?? input.args?.file ?? undefined;
+      const simplification = simplifyCodeToOutput(code, filename);
+      if (simplification) {
+        output.output = (output.output ?? "") + simplification;
       }
     },
 
