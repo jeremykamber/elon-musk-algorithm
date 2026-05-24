@@ -377,74 +377,109 @@ Notes:
 
 ---
 
-## Examples
+## Example: Building a Feature From Scratch
 
-### Example 1: Refactoring a Legacy Module
+This walks through using the ELON agent to build a real feature — a webhook retry system for a payment service. Open a new session (ELON agent is default), then work through it.
 
-```
-User: This payment processor is too slow, it's a bottleneck for payouts.
+### 1. Start the session
 
-Plugin: 💡 Tip: You mentioned "too slow" and "bottleneck" — consider running
-        /elon-algorithm to apply the 5-step algorithm.
-
-User: /elon-algorithm refactor the payment processor
-
-Plugin outputs protocol, then runs Step 1 when asked:
-  Step 1 — Question: Who wrote the original requirements?  VERDICT: VALIDATED
-  <step_done step="1">  <-- detected and stripped, waiting for user
-
-User: proceed
-
-Plugin runs Step 2 and returns a single verdict token and a short plan:
-  Step 2 — DELETE  — remove legacy webhook handler, justify and list tests to monitor
-  <step_done step="2">  <-- detected and stripped
-
-...and so on through Step 5. Each tool returns one verdict token from its allowed set.
-```
-
-### Example 2: Architecture Review
+The ELON agent is already selected (default). Describe what you want:
 
 ```
-User: /elon-algorithm review the microservices architecture
-
-Plugin outputs:
-  ╔══════════════════════════════════════════════════╗
-  ║     ELON MUSK'S ALGORITHM — ACTIVATED            ║
-  ╚══════════════════════════════════════════════════╝
-  
-  The 5-step engineering algorithm will be applied to:
-  review the microservices architecture
-  
-  Step 1 — Question   /elon-question
-  Step 2 — Delete     /elon-delete
-  Step 3 — Simplify   /elon-simplify
-  Step 4 — Accelerate /elon-accelerate
-  Step 5 — Automate   /elon-automate
+Build a webhook retry system for the payment service.
+Failed webhooks should retry with exponential backoff,
+cap at 5 attempts, log every attempt, and alert if all fail.
 ```
 
-### Example 3: Targeted Step Execution
+### 2. Elon interrogates you
+
+The agent runs the interrogation before starting:
 
 ```
-User: We're spending 20 minutes on CI. This pipeline is too slow
-      and the bottleneck is blocking every deploy.
+🚀 **BUILD mode.** Answer honestly:
 
-Plugin: 💡 Tip: You mentioned "too slow" and "bottleneck" — consider running
-        /elon-algorithm to apply the 5-step algorithm.
-
-User calls elon-accelerate tool directly with:
-  target: "CI pipeline (20 min build time)"
-  context: "8 stages, sequential, no caching"
-
-Tool output includes:
-  • Measure current cycle time: 20 min
-  • Identify bottleneck: Integration tests run sequentially
-  • Parallelize: Split test suite into 4 parallel groups
-  • Reduce handoffs: Merge lint + type-check into one stage
-  • Shorten feedback: Fail fast on compilation errors
-  VERDICT: BOTTLENECK_IDENTIFIED
+**Elon:** "One sentence. What exactly are you trying to build?"
 ```
 
+You answer:
+
+```
+A webhook retry system that retries failed delivery with
+exponential backoff and alerts when all attempts fail.
+```
+
+Then Elon asks 4 more questions until the interrogation completes:
+
+```
+**Elon:** "Why does this need to exist? What breaks if you don't build it?"
+```
+
+You answer. After all 5 questions, the algorithm activates:
+
+```
+✅ BUILD mode activated.
+```
+
+The algorithm system prompt is now injected into the session. The ELON agent's SOLID/KISS/DRY/TDD principles are active.
+
+### 3. Agent builds the implementation
+
+The agent starts coding. It questions requirements (Step 1), deletes unnecessary abstractions (Step 2), simplifies (Step 3). After writing code, the plugin runs heuristic analysis and catches issues:
+
+```
 ---
+
+🪺 **Nesting:** Code reaches depth 8. Reduce nesting.
+
+🔀 **Conditionals:** 15 in 120 lines (12.5%).
+
+🏗️ **Type Escapes:** 1 violation.
+```
+
+### 4. You push back on complexity
+
+You see the agent added an abstract `RetryStrategy` interface with three implementations before it even had one working path:
+
+```
+That abstraction layer is premature. Delete it and just
+implement exponential backoff directly. KISS.
+```
+
+The agent refactors — deletes the interface, keeps one concrete implementation, simplifies.
+
+### 5. Run the debt index
+
+Check the final code:
+
+```
+elon-debt-index(target: "retry module",
+  currentComplexity: 180, essentialComplexity: 80)
+```
+
+Output:
+
+```
+### Technical Debt Index: retry module
+Ratio: 2.25 (Moderate)
+Excess: 100
+```
+
+Clean enough to ship.
+
+### 6. The full workflow in practice
+
+What happened end-to-end:
+
+| Phase | What the agent did | Elon principle applied |
+|-------|-------------------|----------------------|
+| **Interrogation** | Questioned what you actually needed, who it's for, minimum version | Step 1: Question requirements |
+| **Implementation** | Wrote retry logic with exponential backoff, logging, alerting | SOLID, KISS, DRY |
+| **Self-review** | Caught nesting depth, type escapes, debt markers | Code analysis hook |
+| **Your review** | Called out premature abstraction | Step 2: Delete |
+| **Refactor** | Deleted interface layer, kept concrete implementation | KISS, Step 3: Simplify |
+| **Verification** | Debt index at 2.25 — acceptable | Technical debt awareness |
+
+The algorithm didn't slow you down — it prevented over-engineering before it compounded. The premature abstraction would have taken 3× longer to unwind later. The nesting warning caught a real maintainability issue. The interrogation forced clarity on what actually mattered before a single line was written.
 
 ## Development
 
