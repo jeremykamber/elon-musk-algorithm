@@ -509,6 +509,23 @@ The order is the algorithm. Break the order, break the result.`,
       results.push(``);
     }
 
+    results.push(`┌──────────────────────────────────────────────────┐`);
+    results.push(`│  UTILITY ASSESSMENT                              │`);
+    results.push(`└──────────────────────────────────────────────────┘`);
+    results.push(`Elon's impact metric: "How many people did you help multiplied by how much help`);
+    results.push(`you provided each person on average?"`);
+    results.push(``);
+    results.push(`For **${args.target}**, evaluate:`);
+    results.push(`  • **Utility improvement** over current state of the art (0-100%): ___%`);
+    results.push(`  • **People affected** (how many people would this impact): ___`);
+    results.push(`  • **Total utility score** = improvement × reach: ___`);
+    results.push(``);
+    results.push(`> 💡 "Building something that makes a big difference to a small number of people`);
+    results.push(`> is just as great as something that makes a small difference for a vast number.`);
+    results.push(`> Not every product will change the world, but if it's making people's lives`);
+    results.push(`> better, that's great." — Elon Musk`);
+    results.push(``);
+
     results.push(`╔══════════════════════════════════════════════════╗`);
     results.push(`║  ALGORITHM COMPLETE                               ║`);
     results.push(`╚══════════════════════════════════════════════════╝`);
