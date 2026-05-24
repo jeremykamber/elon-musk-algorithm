@@ -10,6 +10,14 @@ interface ElonConfig {
   notifications: boolean;
 }
 
+interface SessionData {
+  interrogating: boolean;
+  interStage: number;
+  activated: boolean;
+  mode: "build" | "simplify" | "debug" | "review";
+  learnings: string[];
+}
+
 const DEFAULT_KEYWORDS = [
   "optimize", "automate", "bottleneck", "cycle time", "bloat",
   "waste", "inefficient", "technical debt", "first principles",
@@ -35,54 +43,76 @@ function loadConfig(worktree: string): ElonConfig {
       notifications: parsed.notifications ?? DEFAULT_CONFIG.notifications,
     };
   } catch (err) {
-    console.warn("[elon] Failed to load elon.json, using defaults:", err);
+    console.warn("[elon] Failed to load elon.json:", err);
     return DEFAULT_CONFIG;
   }
 }
 
-const ALGORITHM_PROMPT = `## Engineering Algorithm
+function getOrCreateSession(sid: string): SessionData {
+  let s = sessions.get(sid);
+  if (!s) {
+    s = { interrogating: false, interStage: 0, activated: false, mode: "build", learnings: [] };
+    sessions.set(sid, s);
+  }
+  return s;
+}
+
+// ─── IntentGate ──────────────────────────────────────────────────────────────
+
+type Intent = "build" | "refactor" | "debug" | "research" | "unknown";
+
+function classifyIntent(text: string): Intent {
+  const t = text.toLowerCase();
+  if (/\b(refactor|clean up|simplif|delete|remove|extract|rewrite|reorganize|untangle)\b/.test(t)) return "refactor";
+  if (/\b(fix|bug|error|broken|wrong|issue|fail|crash|not working|doesn't work|broken)\b/.test(t)) return "debug";
+  if (/\b(how|what|why|explain|find|look up|tell me|understand|learn|research|investigate)\b/.test(t)) return "research";
+  if (/\b(create|add|new|implement|build|write|make|develop|introduce)\b/.test(t)) return "build";
+  return "unknown";
+}
+
+function intentToMode(intent: Intent): SessionData["mode"] {
+  switch (intent) {
+    case "refactor": return "simplify";
+    case "debug": return "debug";
+    case "build": return "build";
+    default: return "build";
+  }
+}
+
+function modePrompt(mode: SessionData["mode"]): string {
+  const base = `## Engineering Algorithm
 
 When tackling any engineering problem, consider this ordered approach:
 
-1. **Question every requirement.** Every requirement has a specific human author. Find them. Challenge the requirement. Does it still hold? Is the original constraint still valid? Laws can be changed.
-
-2. **Delete any part or process you can.** Before optimizing, ask: does this need to exist? The best part is no part. Push to the limit. If you don't add back 10% of what you deleted, you didn't delete enough.
-
+1. **Question every requirement.** Every requirement has a specific human author. Find them.
+2. **Delete any part or process you can.** The best part is no part. Push to the limit.
 3. **Simplify and optimize what remains.** Only now — never before deletion.
-
 4. **Accelerate cycle time.** Find the bottleneck. Speed up feedback loops.
+5. **Automate.** Last step. Never automate something that should have been deleted.`;
 
-5. **Automate.** Last step. Never automate something that should have been deleted.
+  const modeNotes: Record<string, string> = {
+    build: `\n\n**Focus: Building.** Follow the full algorithm in order. Don't optimize prematurely.`,
+    simplify: `\n\n**Focus: Simplification.** Heavy emphasis on Step 1 (question requirements) and Step 2 (delete). Before adding anything, try removing. Your default answer should be "delete it."`,
+    debug: `\n\n**Focus: Debugging.** Heavy emphasis on Step 1 (question every assumption) and first-principles reasoning. Strip the problem to its fundamentals. Verify physics. Question every variable.`,
+    review: `\n\n**Focus: Code Review.** Scrutinize everything through SOLID, DRY, TDD, and first-principles lenses. Every function must justify its existence. Every abstraction must carry its weight.`,
+  };
+  return base + (modeNotes[mode] ?? "");
+}
 
-**The order matters.** The most common mistake is to optimize something that shouldn't exist.`;
-
-// ─── Interrogation System ────────────────────────────────────────────────────
+// ─── Interrogation ──────────────────────────────────────────────────────────
 
 const INTERROGATION_QUESTIONS = [
-  `**Elon:** "Alright. One sentence. What exactly are you trying to build? If it takes more than one sentence, you haven't thought about it enough."`,
-  `**Elon:** "Why does this need to exist? Be specific. What breaks if you don't build it? Whose life is worse?"`,
-  `**Elon:** "Who actually asked for this? Not 'the market' or 'the users' — a specific person. Have you talked to them? What did they say?"`,
-  `**Elon:** "What's the absolute minimum version of this that delivers value? Strip it down. What's the core mechanism?"`,
-  `**Elon:** "How will you know if it's working? What's the one metric that tells you this was worth building?"`,
+  `**Elon:** "One sentence. What exactly are you trying to build?"`,
+  `**Elon:** "Why does this need to exist? What breaks if you don't build it?"`,
+  `**Elon:** "Who actually asked for this? Have you talked to them?"`,
+  `**Elon:** "What's the absolute minimum version that delivers value?"`,
+  `**Elon:** "How will you know if it's working — what's the one metric?"`,
 ];
 
-interface InterrogationState {
-  stage: number;
-}
-
-const interrogations = new Map<string, InterrogationState>();
-const activatedSessions = new Set<string>();
-
-function startInterrogation(sessionID: string): void {
-  interrogations.set(sessionID, { stage: 0 });
-  activatedSessions.delete(sessionID);
-}
-
-// ─── Throttle State ──────────────────────────────────────────────────────────
-
+const sessions = new Map<string, SessionData>();
 const keywordThrottle = new Map<string, number>();
 const reviewThrottle = new Map<string, number>();
-const ELON_INTERVAL = 60_000;
+const LEARNINGS_INTERVAL = 300_000;
 const KEYWORD_INTERVAL = 30_000;
 const REVIEW_INTERVAL = 120_000;
 
@@ -92,7 +122,7 @@ function isThrottled(map: Map<string, number>, key: string, interval: number): b
   return Date.now() - last < interval;
 }
 
-// ─── LLM Review Helpers ─────────────────────────────────────────────────────
+// ─── LLM Review ─────────────────────────────────────────────────────────────
 
 function extractSessionId(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
@@ -112,32 +142,23 @@ function extractReviewText(result: unknown): string {
     .join("\n");
 }
 
-const ELON_REVIEW_PROMPT = `You are Elon Musk reviewing code. Be direct, blunt, and critical. Your job is to find unnecessary complexity, violations of engineering principles, and opportunities to simplify.
+const ELON_REVIEW_PROMPT = `You are Elon Musk reviewing code. Be direct, blunt, and critical.
 
-Review the following code against these criteria:
+Review for:
 
-1. **S — Single Responsibility**: Does each function/class/module do ONE thing? If it does more, flag it.
-2. **O — Open/Closed**: Is it extensible without modification? If it requires changes to add features, flag it.
-3. **L — Liskov Substitution**: Are subtypes usable through their base interface? If not, flag it.
-4. **I — Interface Segregation**: Are interfaces small and focused? If any are bloated, flag it.
-5. **D — Dependency Inversion**: Does it depend on abstractions, not concretions? If not, flag it.
-6. **DRY**: Is logic duplicated? Flag exact or near-exact duplication.
-7. **TDD**: Does the code look testable? Are there clear boundaries for testing? If not, flag it.
-8. **First Principles**: Strip the problem to its fundamentals. Is any of this code solving a problem that shouldn't exist in the first place?
-9. **The Best Part is No Part**: What in this code could be deleted entirely without changing behavior?
-10. **Fewer Things**: Is there over-abstraction? Wrappers wrapping wrappers? Unnecessary indirection?
+1. **SOLID** — Single Responsibility, Open/Closed, Liskov, Interface Segregation, Dependency Inversion
+2. **DRY** — Duplicated logic
+3. **TDD** — Testability and clear boundaries
+4. **First Principles** — Could any of this be deleted entirely?
+5. **AI Slop** — Memo comments ("Changed from X"), overly verbose docstrings, unnecessary abstractions, over-engineering
+6. **Complexity** — Nesting, indirection, wrappers that don't earn their weight
 
-For each issue found, include:
-- Severity: CRITICAL (must fix), WARNING (should fix), INFO (consider)
+Format each finding as:
+- Severity: CRITICAL | WARNING | INFO
 - What the issue is
 - How to fix it
 
-After your review, give a final verdict:
-- SIMPLIFY_NEEDED if the code has CRITICAL issues or is fundamentally over-engineered
-- MINOR_FIXES if there are only minor issues
-- CLEAN if the code is solid
-
-Keep your review under 400 words. Be direct. Use Elon's voice — blunt, no sugarcoating.
+Final verdict: SIMPLIFY_NEEDED | MINOR_FIXES | CLEAN
 
 \`\`\`
 {CODE}
@@ -146,35 +167,21 @@ Keep your review under 400 words. Be direct. Use Elon's voice — blunt, no suga
 async function runElonReview(client: unknown, code: string, sessionID: string): Promise<string | null> {
   const c = client as { session: { create: Function; delete: Function; prompt: Function } };
   let childId: string | null = null;
-
   try {
     const created = await c.session.create({ body: { parentID: sessionID } });
     childId = extractSessionId(created);
     if (!childId) return null;
-
-    const prompt = ELON_REVIEW_PROMPT.replace("{CODE}", code.slice(0, 4000));
-    const result = await c.session.prompt({ body: { parts: [{ type: "text" as const, text: prompt }] }, path: { id: childId } });
+    const result = await c.session.prompt({ body: { parts: [{ type: "text" as const, text: ELON_REVIEW_PROMPT.replace("{CODE}", code.slice(0, 4000)) }] }, path: { id: childId } });
     const text = extractReviewText(result);
-
     await c.session.delete({ path: { id: childId } }).catch(() => {});
     childId = null;
-
     if (!text || text.length < 50) return null;
-
-        const isSimplifyNeeded = /SIMPLIFY_NEEDED/i.test(text);
-    const lines = [
-      ``,
-      `---`,
-      `### 🔬 Elon Code Review`,
-      ``,
-      text,
-    ];
-    if (isSimplifyNeeded) {
-      lines.push(``, `> 🚨 **Elon's verdict: SIMPLIFY NEEDED.** This code has fundamental issues. Consider a dedicated simplification pass.`);
-    }
+    const isSimplify = /SIMPLIFY_NEEDED/i.test(text);
+    const lines = [``, `---`, `### 🔬 Elon Code Review`, ``, text];
+    if (isSimplify) lines.push(``, `> 🚨 **Simplify needed.**`);
     return lines.join("\n");
   } catch (err) {
-    console.warn("[elon] LLM review failed:", err);
+    console.warn("[elon] Review failed:", err);
     if (childId) c.session.delete({ path: { id: childId } }).catch(() => {});
     return null;
   }
@@ -183,12 +190,12 @@ async function runElonReview(client: unknown, code: string, sessionID: string): 
 // ─── Technical Debt Index Tool ─────────────────────────────────────────────
 
 const elonDebtIndex = tool({
-  description: `Calculate the Technical Debt Index: current complexity / essential complexity.`,
+  description: `Technical Debt Index: current complexity / essential complexity.`,
   args: {
-    target: tool.schema.string().describe("The part, code, or process to analyze"),
+    target: tool.schema.string().describe("The part to analyze"),
     currentComplexity: tool.schema.number().positive().describe("Current complexity"),
     essentialComplexity: tool.schema.number().positive().describe("Minimum essential complexity"),
-    context: tool.schema.string().optional().describe("Additional context"),
+    context: tool.schema.string().optional().describe("Context"),
   },
   async execute(args) {
     const ratio = Math.round((args.currentComplexity / args.essentialComplexity) * 100) / 100;
@@ -200,7 +207,7 @@ const elonDebtIndex = tool({
     else rating = "Critical";
     return {
       title: `Debt: ${args.target} — ${ratio}`,
-      output: `### Technical Debt Index: ${args.target}\n\nRatio: ${ratio} (${rating})\nExcess: ${excess}\n\nKnow your debt. Delete before you add. Simplify before you optimize.`,
+      output: `### Debt Index: ${args.target}\n\nRatio: ${ratio} (${rating})\nExcess: ${excess}\n\nKnow your debt. Delete before you add.`,
       metadata: { debtIndex: ratio, rating },
     };
   },
@@ -225,76 +232,116 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree }) => {
     tool: { "elon-debt-index": elonDebtIndex },
 
     "experimental.chat.system.transform": async (_input, output) => {
-      if (_input.sessionID && activatedSessions.has(_input.sessionID)) {
-        output.system.push(ALGORITHM_PROMPT);
+      if (!_input.sessionID) return;
+      const sd = sessions.get(_input.sessionID);
+      if (!sd || !sd.activated) return;
+      let prompt = modePrompt(sd.mode);
+      if (sd.learnings.length > 0) {
+        prompt += `\n\n### Learnings from Previous Reviews\n`;
+        for (const l of sd.learnings.slice(-3)) prompt += `- ${l}\n`;
       }
+      output.system.push(prompt);
     },
 
     "chat.message": async (input, output) => {
       const sessId = input.sessionID;
+      const sd = getOrCreateSession(sessId);
+      const userText = output.parts.filter((p): p is TextPart => p.type === "text").map((p) => p.text).join(" ");
 
-      const inter = interrogations.get(sessId);
-      if (inter !== undefined) {
-        const nextStage = inter.stage + 1;
-        if (nextStage >= INTERROGATION_QUESTIONS.length) {
-            interrogations.delete(sessId);
-          activatedSessions.add(sessId);
+      if (sd.interrogating) {
+        sd.interStage++;
+        if (sd.interStage >= INTERROGATION_QUESTIONS.length) {
+          sd.interrogating = false;
+          sd.activated = true;
           output.parts.push({
             id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
             type: "text" as const,
-            text: `\n> ✅ **Interrogation complete.** The algorithm is now active. Use the engineering principles as your guide.`,
+            text: `\n> ✅ **${sd.mode.toUpperCase()} mode activated.**`,
           });
         } else {
-          interrogations.set(sessId, { stage: nextStage });
           output.parts.push({
             id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
             type: "text" as const,
-            text: `\n${INTERROGATION_QUESTIONS[nextStage]}`,
+            text: `\n${INTERROGATION_QUESTIONS[sd.interStage]}`,
           });
         }
         return;
       }
 
-      if (!currentConfig.notifications) return;
-      if (isThrottled(keywordThrottle, sessId, KEYWORD_INTERVAL)) return;
-      const userText = output.parts.filter((p): p is TextPart => p.type === "text").map((p) => p.text).join(" ");
-      const match = containsTriggerKeyword(userText, currentConfig.keywords);
-      if (match) {
-        keywordThrottle.set(sessId, Date.now());
-        output.parts.push({
-          id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
-          type: "text" as const,
-          text: `\n> 💡 You mentioned "*${match}*" — consider \`/elon-algorithm\``,
-        });
+      if (sd.activated) {
+        const intent = classifyIntent(userText);
+        if (intent !== "unknown") {
+          const prevMode = sd.mode;
+          sd.mode = intentToMode(intent);
+          if (sd.mode !== prevMode) {
+            output.parts.push({
+              id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
+              type: "text" as const,
+              text: `\n> 🔄 Mode switched to **${sd.mode}** (detected: ${intent})`,
+            });
+          }
+        }
+      }
+
+      if (currentConfig.notifications && !isThrottled(keywordThrottle, sessId, KEYWORD_INTERVAL)) {
+        const match = containsTriggerKeyword(userText, currentConfig.keywords);
+        if (match) {
+          keywordThrottle.set(sessId, Date.now());
+          output.parts.push({
+            id: randomUUID(), sessionID: sessId, messageID: input.messageID ?? randomUUID(),
+            type: "text" as const,
+            text: `\n> 💡 *${match}* — try \`/elon-algorithm\``,
+          });
+        }
       }
     },
 
     "tool.execute.after": async (input, output) => {
-      const toolName = input.tool.toLowerCase();
-      if (toolName !== "write" && toolName !== "edit" && toolName !== "refactor") return;
+      const tn = input.tool.toLowerCase();
+      if (tn !== "write" && tn !== "edit" && tn !== "refactor") return;
       const code = input.args?.content ?? input.args?.newString ?? null;
       if (!code || typeof code !== "string" || code.length < 200) return;
 
-      if (isThrottled(reviewThrottle, `${input.sessionID}:review`, REVIEW_INTERVAL)) return;
-      reviewThrottle.set(`${input.sessionID}:review`, Date.now());
+      const sd = sessions.get(input.sessionID);
+      const doReview = !sd || sd.activated;
 
-      const review = await runElonReview(client, code, input.sessionID);
-      if (review) output.output = output.output + review;
+      if (doReview && !isThrottled(reviewThrottle, `${input.sessionID}:review`, REVIEW_INTERVAL)) {
+        reviewThrottle.set(`${input.sessionID}:review`, Date.now());
+        const review = await runElonReview(client, code, input.sessionID);
+        if (review) {
+          output.output = output.output + review;
+          if (sd && /SIMPLIFY_NEEDED|CRITICAL/i.test(review)) {
+            sd.learnings.push(`Review flagged issues — review the output above`);
+          }
+        }
+      }
     },
 
     "command.execute.before": async (input, output) => {
-      if (input.command === "elon-algorithm") {
-        startInterrogation(input.sessionID);
+      const sessions_map = sessions;
+      const sid = input.sessionID;
+      const cmd = input.command;
+
+      if (cmd === "elon-algorithm" || cmd === "elon-algo" || cmd === "elon-simplify" || cmd === "elon-debug" || cmd === "elon-review") {
+        const modeMap: Record<string, SessionData["mode"]> = {
+          "elon-algorithm": "build", "elon-algo": "build",
+          "elon-simplify": "simplify", "elon-debug": "debug", "elon-review": "review",
+        };
+        const mode = modeMap[cmd] ?? "build";
+        const sd = getOrCreateSession(sid);
+        sd.mode = mode;
+        sd.interrogating = true;
+        sd.interStage = 0;
+        sd.activated = false;
         const id = randomUUID();
         output.parts = [{
-          id, sessionID: input.sessionID, messageID: id,
+          id, sessionID: sid, messageID: id,
           type: "text" as const,
           text: [
-            `🚀 **Algorithm initiated.** Before we start, I need to interrogate you. Answer honestly.`,
+            `🚀 **${mode.toUpperCase()} mode.** Answer honestly:`,
             ``,
             INTERROGATION_QUESTIONS[0],
-            ``,
-            `> *Answer the question above. Each answer leads to the next. After all questions, the algorithm activates.*`,
+            `\n> *Modes: \`/elon-algorithm\` (build) · \`/elon-simplify\` · \`/elon-debug\` · \`/elon-review\`*`,
           ].join("\n"),
         }];
         return;
