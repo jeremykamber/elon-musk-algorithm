@@ -1,5 +1,5 @@
 import type { Plugin, Hooks, Config } from "@opencode-ai/plugin";
-import type { TextPart, Part } from "@opencode-ai/sdk";
+import type { TextPart } from "@opencode-ai/sdk";
 import type { OpencodeClient } from "@opencode-ai/sdk/client";
 import { tool } from "@opencode-ai/plugin/tool";
 import { readFileSync, existsSync } from "fs";
@@ -522,26 +522,31 @@ Target: {TARGET}
 Step output to analyze:
 {OUTPUT}`;
 
-function parseSubagentFindings(text: string): LLMSubagentFinding[] {
+function safeJSONParse(raw: string): unknown {
   try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].subagent) return parsed as LLMSubagentFinding[];
-  } catch {}
+    return JSON.parse(raw);
+  } catch (err) {
+    if (typeof err === "object" && err && "message" in err && typeof (err as Error).message === "string" && (err as Error).message.includes("Unexpected")) {
+      console.debug("[elon-algorithm] JSON parse failed (expected on non-JSON input):", (err as Error).message.slice(0, 80));
+    }
+    return null;
+  }
+}
+
+function parseSubagentFindings(text: string): LLMSubagentFinding[] {
+  let parsed = safeJSONParse(text);
+  if (Array.isArray(parsed) && parsed.length > 0 && (parsed[0] as Record<string, unknown>)?.subagent) return parsed as LLMSubagentFinding[];
 
   const jsonMatch = text.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
   if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[1]);
-      if (Array.isArray(parsed)) return parsed as LLMSubagentFinding[];
-    } catch {}
+    parsed = safeJSONParse(jsonMatch[1]);
+    if (Array.isArray(parsed)) return parsed as LLMSubagentFinding[];
   }
 
   const bracketMatch = text.match(/\[[\s\S]*?\{[\s\S]*?"subagent"[\s\S]*?\}\]/);
   if (bracketMatch) {
-    try {
-      const parsed = JSON.parse(bracketMatch[0]);
-      if (Array.isArray(parsed)) return parsed as LLMSubagentFinding[];
-    } catch {}
+    parsed = safeJSONParse(bracketMatch[0]);
+    if (Array.isArray(parsed)) return parsed as LLMSubagentFinding[];
   }
 
   const fallback: LLMSubagentFinding[] = [
