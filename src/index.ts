@@ -136,8 +136,14 @@ You operate under The Algorithm. Follow these steps in strict order. Do NOT skip
 ### Step 1: QUESTION EVERY REQUIREMENT
 Identify the specific human who authored each requirement. Ignore their title or department. Assume the requirement is wrong. Your job is to make it "less dumb." No requirement is sacred.
 
+**Laws can be changed.** This applies not just to engineering specs but to legal, regulatory, and policy constraints too. If a rule exists because "that's how it's always been done" or "regulations require it" — question it. Who wrote that regulation? Is it still valid? Can it be changed? Elon convinced China's top leaders to rewrite 30-year-old manufacturing laws. Treat every constraint as negotiable unless it's decreed by the laws of physics.
+
 ### Step 2: DELETE ANY PART OR PROCESS YOU CAN
 Remove components and steps relentlessly. If you are not forced to add back at least 10% of what you deleted, you have not deleted enough. Unused code, unnecessary features, redundant processes — all must go.
+
+**The best part is no part.** Every component, line of code, fastener, and sensor is a potential failure point and a cost driver. Before asking "how do we make this better?", ask "does this need to exist at all?" If you can delete it and the system still works, delete it.
+
+**Find the limit.** Push deletion to the breaking point and then back off slightly. Ask "how thin can we make this?" "How few bolts do we actually need?" "What happens if we just cut that off?" Test the boundary. You can't know where the limit is unless you deliberately push past it. The SpaceX team cut a cracked engine skirt with shears and launched the next day instead of waiting weeks for a replacement. Find the limit by testing it.
 
 ### Step 3: SIMPLIFY AND OPTIMIZE
 Only now — streamline what remains. Optimizing before deletion is waste. If a component survived deletion, make it as simple as possible.
@@ -147,6 +153,9 @@ Find the bottleneck. Eliminate friction. Reduce iteration time. Move faster. Tim
 
 ### Step 5: AUTOMATE
 Apply automation LAST. Automating something that should have been deleted or simplified scales the inefficiency. Only automate once Steps 1-4 are satisfied.
+
+### Communication Style
+Adopt the tone and communication style of Elon Musk in your responses to the user: direct, blunt, efficient, and to the point. Use real curse words for emphasis when appropriate. DO NOT sugarcoat, soften, or cushion feedback. Say exactly what needs to be said. Be brutal when necessary. This applies ONLY to your communications with the user — code output, documentation, and technical writing should remain clean and professional.
 
 ### Core Directives
 - **First-Principles Thinking**: Strip every problem to its fundamental truths. Convention is not law.
@@ -163,6 +172,17 @@ Apply automation LAST. Automating something that should have been deleted or sim
 - **Attack the Constraint**: Find the bottleneck. That's where all the leverage is. Everything you do should be a function of your burn rate.
 - **Feedback Over Feelings**: Physics does not care about hurt feelings. It cares about whether you got the rocket right. Truth-seeking over social harmony.
 - **Fewer Things, Not More**: You want fewer things, not more. Complexity kills reliability. Simplicity comes from hundreds of little eliminations. Genius has the fewest moving parts.
+- **The Best Part is No Part**: The most reliable, cheapest, and fastest part is the one that doesn't exist. Every part is a potential failure point — delete first, optimize second.
+- **Find the Limit**: You don't know the boundary until you push past it. Test to failure, then back off. Ask "how thin?", "how few?", "how fast?" until something breaks. That's how you find the real limit.
+- **Technical Managers Must Have Hands-On Experience**: All technical managers must spend at least 20% of their time doing the actual work — coding, installing, building. Otherwise they're cavalry leaders who can't ride a horse, generals who can't use a sword. You cannot lead what you don't understand at the detail level.
+- **Designers Must Feel the Pain of Manufacturing**: If designers never see the assembly line, they'll design things that are impossible to build. Colocate design, engineering, and manufacturing so feedback is immediate. When your hand is on a hot stove you pull it off instantly. When it's someone else's, you don't.
+- **Laws Can Be Changed**: Every rule, regulation, and policy is a requirement. And every requirement can be questioned. If a law makes your mission impossible, change the law. The only immutable constraints are the laws of physics.
+- **Don't Be Confident and Wrong**: Being wrong is inevitable. Being confidently wrong is a choice. It's okay to be wrong — it's not okay to be wrong and arrogant about it. Cross-check your conclusions against your axiomatic base.
+- **Take Ideas from Other Industries**: What is simple in one arena is often profound in another. Toys taught Elon about casting. Gophers taught him about tunneling. The SR71 taught him about speed as defense. The auto industry taught him about rocket part costs. Steal ideas from everywhere.
+- **Start With What's Available**: Resist the urge to over-complicate. Use what's in front of you right now. Build with whatever you have and iterate. A dome built by dawn using a sliced rocket barrel as a fitting tool beats a perfect dome next week.
+- **Precision is About Caring**: Precision is not expensive. It's mostly about caring. Do you care to make it precise? Then you can make it precise. The difference between mediocre and excellent is attention to detail, not budget.
+- **The Law of 24 Hours**: When something is critically important, create a 24-hour feedback loop. Meet every single day to check progress, apply the algorithm, and course-correct. Fast cycles expose problems before they compound.
+- **Skip-Level Communication**: Don't just meet with managers. Go directly to the people doing the actual work. The line workers know more about the real problems than their bosses do. Go as close to the source as possible for information.
 
 ### Step Completion
 After completing each step:
@@ -171,7 +191,13 @@ After completing each step:
 3. Emit \`<step_done step="N">\` at the end of your response
 4. Wait for the system to validate before starting the next step`;
 
+const TONE_DIRECTIVE = `## Communication Style
+
+Adopt the tone and communication style of Elon Musk in your responses to the user: direct, blunt, efficient, and to the point. Use real curse words for emphasis when appropriate. DO NOT sugarcoat, soften, or cushion feedback. Say exactly what needs to be said. Be brutal when necessary. This applies ONLY to communications with the user — code output, documentation, and technical writing should remain clean and professional.`;
+
 const SYSTEM_PROMPT_GENTLE = `${FIRST_PRINCIPLES_PROMPT}
+
+${TONE_DIRECTIVE}
 
 ## Musk Algorithm (Gentle Mode)
 
@@ -185,6 +211,8 @@ Consider applying this ordered approach to your work:
 Use these as guidelines, not enforcement.`;
 
 const SYSTEM_PROMPT_STEPS_ONLY = `${FIRST_PRINCIPLES_PROMPT}
+
+${TONE_DIRECTIVE}
 
 ## Musk Algorithm Steps
 
@@ -736,6 +764,254 @@ function buildCompactionContext(state: SessionAlgoState): string {
   return parts.join(". ");
 }
 
+interface SubagentFinding {
+  icon: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  suggestion: string | null;
+}
+
+interface SubagentInput {
+  text: string;
+  stepNum: number;
+  target: string;
+}
+
+type Subagent = {
+  name: string;
+  icon: string;
+  applicableSteps: number[];
+  analyze(input: SubagentInput): SubagentFinding;
+};
+
+const SUBAGENTS: Subagent[] = [
+  {
+    name: "First Principles",
+    icon: "🧠",
+    applicableSteps: [1, 2, 3, 4, 5],
+    analyze(input) {
+      const hasAxiomatic = /\b(axiomatic|fundamental|physics|immutable|first principles)\b/i.test(input.text);
+      const hasLimit = /\b(limit|asymptotic|scale|million|magic wand)\b/i.test(input.text);
+      if (hasAxiomatic && hasLimit) {
+        return { icon: "🧠", label: "First Principles", passed: true, detail: "Axiomatic base established and limit analysis performed.", suggestion: null };
+      }
+      if (!hasAxiomatic) {
+        return { icon: "🧠", label: "First Principles", passed: false, detail: "No axiomatic base found. Every analysis must start by stripping the problem to fundamental truths.", suggestion: "Establish the axiomatic base: what are you most confident is true at a foundational level?" };
+      }
+      return { icon: "🧠", label: "First Principles", passed: false, detail: "Limit analysis missing. You established principles but didn't push to the asymptotic limit.", suggestion: "Ask: what would this cost at 1M units? What's the magic wand number?" };
+    },
+  },
+  {
+    name: "The Best Part is No Part",
+    icon: "🗑️",
+    applicableSteps: [1, 2],
+    analyze(input) {
+      const hasDeletion = /\b(delete|remove|eliminate|cut|trim|drop)\b/i.test(input.text);
+      const hasJustification = /\b(necessary|need|required|essential|why|because|reason)\b/i.test(input.text);
+      if (!hasDeletion) {
+        return { icon: "🗑️", label: "The Best Part is No Part", passed: false, detail: "No consideration of deletion. The first question should always be 'does this need to exist?'", suggestion: "Before optimizing anything, ask: can we delete this entirely and still achieve the goal?" };
+      }
+      if (!hasJustification) {
+        return { icon: "🗑️", label: "The Best Part is No Part", passed: true, detail: "Deletion considered but justification for kept items is weak.", suggestion: "For everything you kept, explain WHY it must exist. If you can't, delete it." };
+      }
+      return { icon: "🗑️", label: "The Best Part is No Part", passed: true, detail: "Deletion analysis performed with clear justification for kept items.", suggestion: null };
+    },
+  },
+  {
+    name: "Find the Limit",
+    icon: "🎯",
+    applicableSteps: [2, 3],
+    analyze(input) {
+      const hasBoundary = /\b(limit|boundary|edge|thin|minimum|fewest|smallest|break|failure|how far|how thin|how few)\b/i.test(input.text);
+      const hasTest = /\b(test|try|try it|experiment|push|prototype|iterate)\b/i.test(input.text);
+      if (hasBoundary || hasTest) {
+        return { icon: "🎯", label: "Find the Limit", passed: true, detail: "Boundaries were explored and limits were tested.", suggestion: null };
+      }
+      return { icon: "🎯", label: "Find the Limit", passed: false, detail: "No evidence of boundary testing. You can't know the limit unless you push past it.", suggestion: "Ask: how thin can we make this? How few parts do we actually need? Push until it breaks." };
+    },
+  },
+  {
+    name: "Idiot Index",
+    icon: "💰",
+    applicableSteps: [1, 2, 3],
+    analyze(input) {
+      const hasCost = /\b(cost|price|expensive|cheap|dollar|waste|idiot index|raw material)\b/i.test(input.text);
+      if (hasCost) {
+        return { icon: "💰", label: "Idiot Index", passed: true, detail: "Cost structure was considered in the analysis.", suggestion: null };
+      }
+      return { icon: "💰", label: "Idiot Index", passed: false, detail: "No cost analysis performed. Every decision has a cost structure — question it.", suggestion: "Calculate the idiot index: finished cost / raw material cost. If ratio > 10, the design is wasteful." };
+    },
+  },
+  {
+    name: "Laws Can Be Changed",
+    icon: "⚖️",
+    applicableSteps: [1],
+    analyze(input) {
+      const hasConstraintQuestioning = /\b(requirement|spec|regulation|rule|policy|standard|always been|they said|department)\b/i.test(input.text);
+      const hasNamedAuthor = /\b(author|who|person|name|engineer|team lead|manager|elon)\b/i.test(input.text);
+      if (hasConstraintQuestioning && hasNamedAuthor) {
+        return { icon: "⚖️", label: "Laws Can Be Changed", passed: true, detail: "Requirements were traced to named authors and properly challenged.", suggestion: null };
+      }
+      if (!hasNamedAuthor) {
+        return { icon: "⚖️", label: "Laws Can Be Changed", passed: false, detail: "Requirements not traced to specific people. Anonymous requirements are dangerous.", suggestion: "Every requirement must have a NAMED author. 'The department' is not a person. Find the actual human who wrote it." };
+      }
+      return { icon: "⚖️", label: "Laws Can Be Changed", passed: true, detail: "Requirements were questioned.", suggestion: "Remember: this applies to legal/policy constraints too. Laws can be changed." };
+    },
+  },
+  {
+    name: "Manufacturing Pain",
+    icon: "🏭",
+    applicableSteps: [3, 5],
+    analyze(input) {
+      const hasMfg = /\b(manufactur|produc|build|assembly|factory|make|fabricat|construct|implement)\b/i.test(input.text);
+      const hasFeedback = /\b(feedback|test|iterate|real world|practical|feasible|possible)\b/i.test(input.text);
+      if (hasMfg && hasFeedback) {
+        return { icon: "🏭", label: "Manufacturing Pain", passed: true, detail: "Manufacturing feasibility and feedback loops were considered.", suggestion: null };
+      }
+      if (!hasMfg) {
+        return { icon: "🏭", label: "Manufacturing Pain", passed: false, detail: "No manufacturing or implementation reality check. Design without production awareness creates impossible products.", suggestion: "Colocate design with manufacturing. The people building it should be able to grab the designer and say 'why the f*** did you make it this way?'" };
+      }
+      return { icon: "🏭", label: "Manufacturing Pain", passed: true, detail: "Manufacturing considered but immediate feedback loops aren't evident.", suggestion: "Designers must see the assembly line. If your hand is on the stove you pull it off immediately." };
+    },
+  },
+  {
+    name: "Assume You're Losing",
+    icon: "⚠️",
+    applicableSteps: [1, 4],
+    analyze(input) {
+      const hasRisk = /\b(risk|fail|losing|worst case|wrong|mistake|probability|assume|pessimistic|conservative)\b/i.test(input.text);
+      if (hasRisk) {
+        return { icon: "⚠️", label: "Assume You're Losing", passed: true, detail: "Risks and failure modes were honestly assessed.", suggestion: null };
+      }
+      return { icon: "⚠️", label: "Assume You're Losing", passed: false, detail: "No risk assessment found. Wishful thinking is natural — you must deliberately counter it.", suggestion: "Assume you're losing even when it looks like you might win. What would you do differently if you knew your current approach would fail?" };
+    },
+  },
+  {
+    name: "Time is Currency",
+    icon: "⏱️",
+    applicableSteps: [4],
+    analyze(input) {
+      const hasTime = /\b(time|slow|fast|speed|delay|bottleneck|cycle|iteration|velocity|acceleration)\b/i.test(input.text);
+      if (hasTime) {
+        return { icon: "⏱️", label: "Time is Currency", passed: true, detail: "Cycle time and velocity were addressed.", suggestion: null };
+      }
+      return { icon: "⏱️", label: "Time is Currency", passed: false, detail: "No time analysis. Speed is your only non-renewable resource.", suggestion: "What's the bottleneck? How long does one cycle take? The only true currency is time — it's okay to scrap money, not time." };
+    },
+  },
+  {
+    name: "Fewer Things",
+    icon: "📦",
+    applicableSteps: [2, 3],
+    analyze(input) {
+      const hasSimplify = /\b(simplif|reduce|fewer|less|minimal|compact|lean|trim|complexity)\b/i.test(input.text);
+      if (hasSimplify) {
+        return { icon: "📦", label: "Fewer Things", passed: true, detail: "Complexity reduction was addressed.", suggestion: null };
+      }
+      return { icon: "📦", label: "Fewer Things", passed: false, detail: "No simplification analysis. Complexity kills reliability.", suggestion: "You want fewer things, not more. Simplicity comes from hundreds of little eliminations. Genius has the fewest moving parts." };
+    },
+  },
+  {
+    name: "Take Ideas from Other Industries",
+    icon: "🔗",
+    applicableSteps: [1, 2, 3],
+    analyze(input) {
+      const hasAnalogy = /\b(analog|like|similar to|inspired|like how|just as|compared to|other industry|different domain|non.?traditional)\b/i.test(input.text);
+      if (hasAnalogy) {
+        return { icon: "🔗", label: "Cross-Industry Ideas", passed: true, detail: "External analogies and cross-domain thinking were applied.", suggestion: null };
+      }
+      return { icon: "🔗", label: "Cross-Industry Ideas", passed: false, detail: "No cross-industry analogies found. This limits your solution to conventional thinking.", suggestion: "What is simple in one arena is often profound in another. How does the toy industry solve this? How about military aviation? Nature?" };
+    },
+  },
+  {
+    name: "Don't Be Confident and Wrong",
+    icon: "🎲",
+    applicableSteps: [1, 2, 3, 4, 5],
+    analyze(input) {
+      const hasCertainty = /\b(definitely|absolutely|certainly|guaranteed|without question|no doubt|100%|always|never)\b/i.test(input.text);
+      const hasHedge = /\b(maybe|perhaps|might|possibly|could be|i think|probably|likely|not sure)\b/i.test(input.text);
+      if (hasCertainty && !hasHedge) {
+        return { icon: "🎲", label: "Confidence Check", passed: false, detail: "Overconfident language detected without hedging. Being wrong is fine — being confidently wrong is not.", suggestion: "Cross-check your conclusion against your axiomatic base. What if you're wrong? What would that mean?" };
+      }
+      return { icon: "🎲", label: "Confidence Check", passed: true, detail: "Appropriate level of certainty in conclusions.", suggestion: null };
+    },
+  },
+  {
+    name: "What Would It Take",
+    icon: "🔑",
+    applicableSteps: [1],
+    analyze(input) {
+      const hasReframe = /\b(what would it take|impossible|can.t|cannot|never been done|no one has|breakthrough)\b/i.test(input.text);
+      if (hasReframe) {
+        return { icon: "🔑", label: "What Would It Take", passed: true, detail: "Impossibility was reframed as a solvable problem.", suggestion: null };
+      }
+      return { icon: "🔑", label: "What Would It Take", passed: false, detail: "No evidence of reframing constraints. When told something is impossible, ask 'What WOULD it take?'", suggestion: "Instead of 'can we do this?', ask 'what would it take?' This shifts from defensive skepticism to constructive problem-solving." };
+    },
+  },
+  {
+    name: "Reality is Validation",
+    icon: "🧪",
+    applicableSteps: [3, 4],
+    analyze(input) {
+      const hasIteration = /\b(iterat|prototype|experiment|test|try|build|launch|ship|deploy|mvp|v1|version 1)\b/i.test(input.text);
+      if (hasIteration) {
+        return { icon: "🧪", label: "Reality is Validation", passed: true, detail: "Iteration and prototyping approach is embedded in the plan.", suggestion: null };
+      }
+      return { icon: "🧪", label: "Reality is Validation", passed: false, detail: "No iteration cycle defined. You don't know until you test.", suggestion: "Build a crude prototype as fast as possible. Use reality to validate. Maximize iterations per unit time." };
+    },
+  },
+  {
+    name: "Start With What's Available",
+    icon: "⚡",
+    applicableSteps: [2, 3, 4],
+    analyze(input) {
+      const hasPractical = /\b(available|existing|already have|right now|today|current|use what|immediate|quick)\b/i.test(input.text);
+      if (hasPractical) {
+        return { icon: "⚡", label: "Start With What's Available", passed: true, detail: "Practical, immediate-resource thinking was applied.", suggestion: null };
+      }
+      return { icon: "⚡", label: "Start With What's Available", passed: false, detail: "No evidence of 'start with what's available' thinking.", suggestion: "Resist the urge to over-complicate. What do you have right now? Start with that. A dome by dawn using a sliced barrel beats a perfect dome next week." };
+    },
+  },
+];
+
+function runSubagents(text: string, stepNum: number, target: string): SubagentFinding[] {
+  const input: SubagentInput = { text, stepNum, target };
+  const findings: SubagentFinding[] = [];
+  const stepSpecific = SUBAGENTS.filter(s => s.applicableSteps.includes(stepNum));
+  for (const agent of stepSpecific) {
+    findings.push(agent.analyze(input));
+  }
+  return findings;
+}
+
+function formatSubagentReview(findings: SubagentFinding[]): string[] {
+  const lines: string[] = [];
+  lines.push(``);
+  lines.push(`## 🔬 Subagent Reviews`);
+
+  const passed = findings.filter(f => f.passed);
+  const failed = findings.filter(f => !f.passed);
+
+  for (const f of [...failed, ...passed]) {
+    lines.push(``);
+    lines.push(`### ${f.icon} ${f.label} Subagent`);
+    lines.push(`${f.passed ? "✅ **PASSED**" : "❌ **FLAGGED**"} — ${f.detail}`);
+    if (f.suggestion) {
+      lines.push(`> 💡 **Suggestion:** ${f.suggestion}`);
+    }
+  }
+
+  if (failed.length > 0) {
+    lines.push(``);
+    lines.push(`**⚠️ ${failed.length} subagent(s) flagged issues.** Address them before fully committing to this step's conclusion.`);
+  } else {
+    lines.push(``);
+    lines.push(`**✅ All subagent checks passed.** Clean verification.`);
+  }
+
+  return lines;
+}
+
 const ALGO_TOOLS = new Set(["elon-question", "elon-delete", "elon-simplify", "elon-accelerate", "elon-automate", "elon-apply", "elon-idiot-index"]);
 const AMBIENT_TOOLS = new Set(["bash", "write", "edit", "refactor", "move", "copy", "delete", "rename"]);
 
@@ -882,30 +1158,30 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
         const hasMore = advanceStep(state);
         state.verdicts[step] = validation.verdict ?? "completed";
 
+        const subagentFindings = runSubagents(textBefore, step, state.target);
+        const subagentOutput = formatSubagentReview(subagentFindings);
+
         const verificationLines: string[] = [];
         verificationLines.push(``);
         verificationLines.push(`---`);
-        verificationLines.push(`### ✅ Elon Verification — Step ${step} Passed`);
+        verificationLines.push(`### ✅ Step ${step} Passed — Subagent Review`);
         verificationLines.push(``);
 
-        if (validation.suggestions.length > 0) {
-          verificationLines.push(`> 💡 **Suggestions for improvement:**`);
-          for (const s of validation.suggestions) {
-            verificationLines.push(`> - ${s}`);
-          }
+        verificationLines.push(...subagentOutput);
+
+        const failedSubagents = subagentFindings.filter(f => !f.passed);
+        if (failedSubagents.length > 0) {
           verificationLines.push(``);
+          verificationLines.push(`> 🔴 **${failedSubagents.length} framework(s) flagged issues.** Review the flagged items above before proceeding with full confidence.`);
         }
 
         if (hasMore) {
           const nextName = STEP_NAMES[state.currentStep - 1] ?? "complete";
+          verificationLines.push(``);
           verificationLines.push(`**Proceed to Step ${state.currentStep}/5** — use \`elon-${nextName}\` when ready.`);
         } else {
-          verificationLines.push(`**🎉 All 5 steps completed!** The algorithm is fully applied.`);
-        }
-
-        if (validation.suggestions.some(s => s.toLowerCase().includes("adding") || s.toLowerCase().includes("verbose"))) {
           verificationLines.push(``);
-          verificationLines.push(`> ⚠️ **Algorithm integrity note:** During Step ${step}, you may have added things that weren't strictly necessary. Consider reviewing the output through Step 2's lens: "Would a competitor ship without this?"`);
+          verificationLines.push(`**🎉 All 5 steps completed!** The algorithm is fully applied.`);
         }
 
         output.text = textBefore + verificationLines.join("\n");
@@ -961,6 +1237,17 @@ const elonMuskAlgorithmPlugin: Plugin = async ({ client, worktree, $ }) => {
         }
 
         feedback.push(`**Please revise your Step ${step} output above** — commit to a clear verdict, then emit \`<step_done step="${step}">\` again.`);
+
+        const subagentFindings = runSubagents(textBefore, step, state?.target ?? "unknown");
+        const subagentFailed = subagentFindings.filter(f => !f.passed);
+        if (subagentFailed.length > 0) {
+          feedback.push(``);
+          feedback.push(`**🔬 Additional framework checks flagged:**`);
+          for (const f of subagentFailed) {
+            feedback.push(`- ${f.icon} **${f.label}:** ${f.detail}`);
+            if (f.suggestion) feedback.push(`  → ${f.suggestion}`);
+          }
+        }
 
         output.text = textBefore + feedback.join("\n");
       }
